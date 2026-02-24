@@ -1,0 +1,31 @@
+# Data and model files (large / regeneratable)
+data/
+models/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local IDE / Claude settings
+.claude/
+
+# Results (regeneratable)
+results/
+
+# Windows system files
+desktop.ini
+
+# Accidental files
+*.txt.py
+"python generate_data.py --no-rct --.txt"
