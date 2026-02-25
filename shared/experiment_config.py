@@ -18,7 +18,7 @@ TRACKED_ACTIVITIES = [
     'initiate_application', 'start_standard', 'start_priority',
     'call_customer', 'email_customer', 'validate_application',
     'contact_headquarters', 'skip_contact', 'calculate_offer',
-    'cancel_application', 'receive_acceptance'
+    'cancel_application', 'receive_acceptance', 'receive_refusal'
 ]
 STATE_DIM = len(BASE_FEATURES) + len(TRACKED_ACTIVITIES)  # 16
 

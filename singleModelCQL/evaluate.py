@@ -76,12 +76,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--n_cases', type=int, default=10000)
     parser.add_argument('--confounded', action='store_true')
-    parser.add_argument('--n_episodes', type=int, default=1000)
-    parser.add_argument('--seed', type=int, default=1042)  # Different from train seed
+    parser.add_argument('--n_episodes',   type=int, default=1000)
+    parser.add_argument('--seed',         type=int, default=1042)
+    parser.add_argument('--train_seed',   type=int, default=42)
+    parser.add_argument('--results_file', type=str, default=None)
     args = parser.parse_args()
 
     suffix = "CONF" if args.confounded else "RCT"
-    model_path = f"models/single_cql_{suffix}_{args.n_cases}.pth"
+    model_path = f"models/single_cql_{suffix}_{args.n_cases}_s{args.train_seed}.pth"
     params_path = f"data/single_cql_{suffix}_{args.n_cases}_params.pkl"
 
     print(f"\n{'='*50}")
@@ -116,6 +118,12 @@ def main():
     print(f"\n{'='*50}")
     print(f"CQL {'beats' if gain > 0 else 'underperforms'} Bank by {gain:+.1f}%")
     print('='*50)
+
+    if args.results_file:
+        import json
+        os.makedirs(os.path.dirname(os.path.abspath(args.results_file)), exist_ok=True)
+        with open(args.results_file, 'w') as f:
+            json.dump({'Bank': bank_res['avg'], f'CQL {suffix}': cql_res['avg'], 'Random': random_res['avg']}, f)
 
 
 if __name__ == "__main__":

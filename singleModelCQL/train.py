@@ -76,7 +76,9 @@ def main():
     parser.add_argument('--alpha', type=float, default=1.0)
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--tau',  type=float, default=0.005)
-    parser.add_argument('--seed', type=int,   default=42)
+    parser.add_argument('--seed',     type=int,   default=42)
+    parser.add_argument('--patience', type=int,   default=10)
+    parser.add_argument('--es_delta', type=float, default=1e-4)
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -119,6 +121,7 @@ def main():
     val_loader = DataLoader(TransitionDataset(df_val), batch_size=args.batch_size)
 
     best_val, best_state = float('inf'), None
+    patience_count = 0
 
     for epoch in range(args.epochs):
         # Train
@@ -178,18 +181,24 @@ def main():
                 val_loss += F.mse_loss(q_a, targets).item()
 
         val_loss /= len(val_loader)
-        if val_loss < best_val:
+        if val_loss < best_val - args.es_delta:
             best_val = val_loss
             best_state = model.state_dict().copy()
+            patience_count = 0
+        else:
+            patience_count += 1
 
         if (epoch + 1) % 10 == 0:
             print(f"Epoch {epoch+1}: train={train_loss/len(train_loader):.4f}, val={val_loss:.4f}")
+        if patience_count >= args.patience:
+            print(f"  [early stop] epoch {epoch+1}, best_val={best_val:.4f}")
+            break
 
     # Save
     model.load_state_dict(best_state)
     os.makedirs("models", exist_ok=True)
     torch.save({'model': model.state_dict(), 'scaler': scaler, 'config': {'state_dim': STATE_DIM}},
-               f"models/single_cql_{suffix}_{args.n_cases}.pth")
+               f"models/single_cql_{suffix}_{args.n_cases}_s{args.seed}.pth")
 
     print(f"\n[OK] Best val loss: {best_val:.4f}")
     print(f"Next: python singleModelCQL/evaluate.py --n_cases {args.n_cases} {'--confounded' if args.confounded else ''}")

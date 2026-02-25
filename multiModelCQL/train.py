@@ -72,6 +72,7 @@ def scale_col(df, col, mask, scaler):
 
 def train_q(q, qt, opt, tr, va, target_fn, args):
     best_val, best_state = float('inf'), copy.deepcopy(q.state_dict())
+    patience_count = 0
     for epoch in range(args.epochs):
         q.train()
         tl = 0.0
@@ -98,10 +99,16 @@ def train_q(q, qt, opt, tr, va, target_fn, args):
                 q_taken = q(s).gather(1, a.unsqueeze(1)).squeeze(1)
                 vl += F.mse_loss(q_taken, target_fn(b)).item()
         vl /= max(len(va), 1)
-        if vl < best_val:
+        if vl < best_val - args.es_delta:
             best_val, best_state = vl, copy.deepcopy(q.state_dict())
+            patience_count = 0
+        else:
+            patience_count += 1
         if (epoch + 1) % 10 == 0:
             print(f"  [{epoch+1:3d}/{args.epochs}] train={tl/len(tr):.4f}  val={vl:.4f}")
+        if patience_count >= args.patience:
+            print(f"  [early stop] epoch {epoch+1}, best_val={best_val:.4f}")
+            break
 
     return best_state, best_val
 
@@ -117,6 +124,8 @@ def main():
     parser.add_argument('--gamma',      type=float, default=0.99)
     parser.add_argument('--tau',        type=float, default=0.005)
     parser.add_argument('--seed',       type=int,   default=42)
+    parser.add_argument('--patience',   type=int,   default=10)
+    parser.add_argument('--es_delta',   type=float, default=1e-4)
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -199,7 +208,7 @@ def main():
     Q1.load_state_dict(best1)
 
     os.makedirs("models", exist_ok=True)
-    model_path = f"models/multi_cql_{suffix}_{args.n_cases}.pth"
+    model_path = f"models/multi_cql_{suffix}_{args.n_cases}_s{args.seed}.pth"
     torch.save({
         'Q1': Q1.state_dict(), 'Q2': Q2.state_dict(), 'Q3': Q3.state_dict(),
         'scaler1': scalers[0], 'scaler2': scalers[1], 'scaler3': scalers[2],

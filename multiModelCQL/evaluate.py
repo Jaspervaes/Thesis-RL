@@ -65,12 +65,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--n_cases',    type=int,  default=10000)
     parser.add_argument('--confounded', action='store_true')
-    parser.add_argument('--n_episodes', type=int,  default=1000)
-    parser.add_argument('--seed',       type=int,  default=1042)
+    parser.add_argument('--n_episodes',   type=int, default=1000)
+    parser.add_argument('--seed',         type=int, default=1042)
+    parser.add_argument('--train_seed',   type=int, default=42)
+    parser.add_argument('--results_file', type=str, default=None)
     args = parser.parse_args()
 
     suffix = "CONF" if args.confounded else "RCT"
-    ckpt = torch.load(f"models/multi_cql_{suffix}_{args.n_cases}.pth",
+    ckpt = torch.load(f"models/multi_cql_{suffix}_{args.n_cases}_s{args.train_seed}.pth",
                       map_location=device, weights_only=False)
     cfg = ckpt['config']
 
@@ -96,6 +98,12 @@ def main():
 
     gain = ((cql_res['avg'] / bank_res['avg']) - 1) * 100
     print(f"\nCQL-MM {'beats' if gain > 0 else 'underperforms'} Bank by {gain:+.1f}%")
+
+    if args.results_file:
+        import json
+        os.makedirs(os.path.dirname(os.path.abspath(args.results_file)), exist_ok=True)
+        with open(args.results_file, 'w') as f:
+            json.dump({'Bank': bank_res['avg'], f'CQL-MM {suffix}': cql_res['avg'], 'Random': random_res['avg']}, f)
 
 
 if __name__ == "__main__":
