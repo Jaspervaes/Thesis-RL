@@ -13,9 +13,9 @@ os.chdir(project_root)
 from shared import load_pickle, save_pickle, split_train_val, get_ir_action
 
 
-def extract_transitions(df):
+def extract_transitions(df, steps=3):
     """
-    Extract transitions with prefix sequences and RIMS timing targets.
+    Extract transitions with prefix sequences and RIMS timing targets for `steps` interventions.
     Timing targets per intervention: (proc_time, rem_time) in hours.
     """
     rows = []
@@ -37,6 +37,12 @@ def extract_transitions(df):
         proc0 = (ts0 - group.loc[i0 - 1, 'timestamp']).total_seconds() / 3600
         rem0  = (end_ts - ts0).total_seconds() / 3600
 
+        if steps == 1:
+            rows.append({'prefix': p0, 'action': a0, 'reward': outcome,
+                         'next_prefix': [], 'terminal': True, 'intervention': 0, 'next_intervention': -1,
+                         'proc_time': proc0, 'rem_time': rem0})
+            continue
+
         int1_rows = group[group['activity'].isin(['contact_headquarters', 'skip_contact']) & (group.index > i0)]
         int2_rows = group[(group['activity'] == 'calculate_offer') & (group.index > i0)]
         has1, has2 = not int1_rows.empty, not int2_rows.empty
@@ -47,6 +53,24 @@ def extract_transitions(df):
             rem   = (end_ts - ts_i).total_seconds() / 3600
             return proc, rem
 
+        if steps == 2:
+            if has1:
+                i1 = int1_rows.index[0]
+                a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
+                p1 = events[:i1]
+                proc1, rem1 = timing(i1)
+                rows += [
+                    {'prefix': p0, 'action': a0, 'reward': 0.0,    'next_prefix': p1, 'terminal': False, 'intervention': 0, 'next_intervention': 1, 'proc_time': proc0, 'rem_time': rem0},
+                    {'prefix': p1, 'action': a1, 'reward': outcome, 'next_prefix': [], 'terminal': True,  'intervention': 1, 'next_intervention': -1, 'proc_time': proc1, 'rem_time': rem1},
+                ]
+            else:
+                # Priority path skips int1: outcome determined by bank at int2
+                rows.append({'prefix': p0, 'action': a0, 'reward': outcome,
+                             'next_prefix': [], 'terminal': True, 'intervention': 0, 'next_intervention': -1,
+                             'proc_time': proc0, 'rem_time': rem0})
+            continue
+
+        # steps == 3
         if has1 and has2:
             i1, i2 = int1_rows.index[0], int2_rows.index[0]
             a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
@@ -81,7 +105,9 @@ def extract_transitions(df):
             ]
 
         else:
-            rows.append({'prefix': p0, 'action': a0, 'reward': outcome, 'next_prefix': [], 'terminal': True, 'intervention': 0, 'next_intervention': -1, 'proc_time': proc0, 'rem_time': rem0})
+            rows.append({'prefix': p0, 'action': a0, 'reward': outcome,
+                         'next_prefix': [], 'terminal': True, 'intervention': 0, 'next_intervention': -1,
+                         'proc_time': proc0, 'rem_time': rem0})
 
     return rows
 
@@ -91,21 +117,23 @@ def main():
     parser.add_argument('--n_cases',    type=int, default=10000)
     parser.add_argument('--confounded', action='store_true')
     parser.add_argument('--seed',       type=int, default=42)
+    parser.add_argument('--steps',      type=int, default=3, choices=[1, 2, 3])
     args = parser.parse_args()
 
     suffix = "CONF" if args.confounded else "RCT"
     base = f"data/rims_{suffix}_{args.n_cases}"
+    step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
 
     df = load_pickle(f"{base}_raw.pkl")
     df_train, df_val = split_train_val(df, val_ratio=0.2, seed=args.seed)
 
-    train_rows = extract_transitions(df_train)
-    val_rows   = extract_transitions(df_val)
+    train_rows = extract_transitions(df_train, args.steps)
+    val_rows   = extract_transitions(df_val,   args.steps)
 
-    save_pickle(pd.DataFrame(train_rows), f"{base}_trans_train.pkl")
-    save_pickle(pd.DataFrame(val_rows),   f"{base}_trans_val.pkl")
-    print(f"Train: {len(train_rows)}, Val: {len(val_rows)} transitions")
-    print(f"[OK] Saved to {base}_trans_*.pkl")
+    save_pickle(pd.DataFrame(train_rows), f"{base}_trans_train{step_tag}.pkl")
+    save_pickle(pd.DataFrame(val_rows),   f"{base}_trans_val{step_tag}.pkl")
+    print(f"Train: {len(train_rows)}, Val: {len(val_rows)} transitions (steps={args.steps})")
+    print(f"[OK] Saved to {base}_trans_*{step_tag}.pkl")
 
 
 if __name__ == "__main__":

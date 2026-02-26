@@ -205,6 +205,7 @@ def main():
     parser.add_argument('--seed',       type=int,   default=42)
     parser.add_argument('--patience',   type=int,   default=10)
     parser.add_argument('--es_delta',   type=float, default=1e-4)
+    parser.add_argument('--steps',      type=int,   default=3, choices=[1, 2, 3])
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -214,10 +215,11 @@ def main():
 
     suffix = "CONF" if args.confounded else "RCT"
     base   = f"data/rims_{suffix}_{args.n_cases}"
-    print(f"Training RIMS — {suffix} | lr={args.lr} w=(t={args.w_timing},o={args.w_outcome},q={args.w_q}) epochs={args.epochs}")
+    step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
+    print(f"Training RIMS — {suffix} | lr={args.lr} w=(t={args.w_timing},o={args.w_outcome},q={args.w_q}) steps={args.steps}")
 
-    df_train = load_pickle(f"{base}_trans_train.pkl")
-    df_val   = load_pickle(f"{base}_trans_val.pkl")
+    df_train = load_pickle(f"{base}_trans_train{step_tag}.pkl")
+    df_val   = load_pickle(f"{base}_trans_val{step_tag}.pkl")
     print(f"Train: {len(df_train)}, Val: {len(df_val)} transitions")
 
     activity_to_idx, feat_means, feat_stds = build_vocab_and_stats(df_train)
@@ -233,71 +235,102 @@ def main():
         return make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len,
                            proc_mean, proc_std, rem_mean, rem_std, args.batch_size, shuffle)
 
-    tr0, va0 = loader(df_train, 0), loader(df_val, 0, False)
-    tr1, va1 = loader(df_train, 1), loader(df_val, 1, False)
-    tr2, va2 = loader(df_train, 2), loader(df_val, 2, False)
-
     def make_model(n_act):
         m  = RIMS_Model(n_activities, len(FEATURE_COLS), n_act, args.emb_dim, args.hidden, args.n_layers, args.dropout).to(device)
         mt = RIMS_Model(n_activities, len(FEATURE_COLS), n_act, args.emb_dim, args.hidden, args.n_layers, args.dropout).to(device)
         mt.load_state_dict(m.state_dict())
         return m, mt
 
-    R1, R1t = make_model(N_ACTIONS[0])
-    R2, R2t = make_model(N_ACTIONS[1])
-    R3, R3t = make_model(N_ACTIONS[2])
-
     wt, wo, wq = args.w_timing, args.w_outcome, args.w_q
 
-    print("\n[Q3]")
-    best3 = train_rims(R3, R3t, optim.Adam(R3.parameters(), args.lr), tr2, va2,
-                       lambda b: b['reward'].squeeze(1).to(device), args, wt, wo, wq)
-    R3.load_state_dict(best3); R3t.load_state_dict(best3)
+    cfg = {
+        'n_activities':   n_activities,
+        'n_features':     len(FEATURE_COLS),
+        'feature_cols':   FEATURE_COLS,
+        'activity_to_idx': activity_to_idx,
+        'feat_means':     feat_means,
+        'feat_stds':      feat_stds,
+        'max_len':        max_len,
+        'emb_dim':        args.emb_dim,
+        'hidden':         args.hidden,
+        'n_layers':       args.n_layers,
+        'dropout':        args.dropout,
+        'n_actions':      N_ACTIONS,
+        'proc_mean':      proc_mean, 'proc_std': proc_std,
+        'rem_mean':       rem_mean,  'rem_std':  rem_std,
+        'steps':          args.steps,
+    }
 
-    print("\n[Q2]")
-    def tgt2(b):
-        r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
-        with torch.no_grad():
-            nq = R3t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-        return term * r + (1 - term) * args.gamma * nq.max(1)[0]
-    best2 = train_rims(R2, R2t, optim.Adam(R2.parameters(), args.lr), tr1, va1, tgt2, args, wt, wo, wq)
-    R2.load_state_dict(best2); R2t.load_state_dict(best2)
+    if args.steps == 1:
+        R1, R1t = make_model(N_ACTIONS[0])
+        tr0 = loader(df_train, 0); va0 = loader(df_val, 0, False)
+        print("\n[Q1]")
+        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr), tr0, va0,
+                           lambda b: b['reward'].squeeze(1).to(device), args, wt, wo, wq)
+        R1.load_state_dict(best1)
+        save_dict = {'R1': R1.state_dict(), 'config': cfg}
 
-    print("\n[Q1]")
-    def tgt1(b):
-        r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
-        with torch.no_grad():
-            nq2 = R2t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-            nq3 = R3t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-        t = term * r
-        m = (1 - term).bool()
-        if m.any():
-            t[m] = args.gamma * torch.max(nq2[m].max(1)[0], nq3[m].max(1)[0])
-        return t
-    best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr), tr0, va0, tgt1, args, wt, wo, wq)
-    R1.load_state_dict(best1)
+    elif args.steps == 2:
+        R1, R1t = make_model(N_ACTIONS[0])
+        R2, R2t = make_model(N_ACTIONS[1])
+        tr0 = loader(df_train, 0); va0 = loader(df_val, 0, False)
+        tr1 = loader(df_train, 1); va1 = loader(df_val, 1, False)
+
+        print("\n[Q2]")
+        best2 = train_rims(R2, R2t, optim.Adam(R2.parameters(), args.lr), tr1, va1,
+                           lambda b: b['reward'].squeeze(1).to(device), args, wt, wo, wq)
+        R2.load_state_dict(best2); R2t.load_state_dict(best2)
+
+        print("\n[Q1]")
+        def tgt1_2step(b):
+            r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
+            with torch.no_grad():
+                nq2 = R2t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
+            return term * r + (1 - term) * args.gamma * nq2.max(1)[0]
+        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr), tr0, va0, tgt1_2step, args, wt, wo, wq)
+        R1.load_state_dict(best1)
+        save_dict = {'R1': R1.state_dict(), 'R2': R2.state_dict(), 'config': cfg}
+
+    else:  # steps == 3
+        R1, R1t = make_model(N_ACTIONS[0])
+        R2, R2t = make_model(N_ACTIONS[1])
+        R3, R3t = make_model(N_ACTIONS[2])
+        tr0 = loader(df_train, 0); va0 = loader(df_val, 0, False)
+        tr1 = loader(df_train, 1); va1 = loader(df_val, 1, False)
+        tr2 = loader(df_train, 2); va2 = loader(df_val, 2, False)
+
+        print("\n[Q3]")
+        best3 = train_rims(R3, R3t, optim.Adam(R3.parameters(), args.lr), tr2, va2,
+                           lambda b: b['reward'].squeeze(1).to(device), args, wt, wo, wq)
+        R3.load_state_dict(best3); R3t.load_state_dict(best3)
+
+        print("\n[Q2]")
+        def tgt2(b):
+            r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
+            with torch.no_grad():
+                nq = R3t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
+            return term * r + (1 - term) * args.gamma * nq.max(1)[0]
+        best2 = train_rims(R2, R2t, optim.Adam(R2.parameters(), args.lr), tr1, va1, tgt2, args, wt, wo, wq)
+        R2.load_state_dict(best2); R2t.load_state_dict(best2)
+
+        print("\n[Q1]")
+        def tgt1(b):
+            r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
+            with torch.no_grad():
+                nq2 = R2t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
+                nq3 = R3t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
+            t = term * r
+            m = (1 - term).bool()
+            if m.any():
+                t[m] = args.gamma * torch.max(nq2[m].max(1)[0], nq3[m].max(1)[0])
+            return t
+        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr), tr0, va0, tgt1, args, wt, wo, wq)
+        R1.load_state_dict(best1)
+        save_dict = {'R1': R1.state_dict(), 'R2': R2.state_dict(), 'R3': R3.state_dict(), 'config': cfg}
 
     os.makedirs("models", exist_ok=True)
-    model_path = f"models/rims_{suffix}_{args.n_cases}_s{args.seed}.pth"
-    torch.save({
-        'R1': R1.state_dict(), 'R2': R2.state_dict(), 'R3': R3.state_dict(),
-        'config': {
-            'n_activities':   n_activities,
-            'n_features':     len(FEATURE_COLS),
-            'feature_cols':   FEATURE_COLS,
-            'activity_to_idx': activity_to_idx,
-            'feat_means':     feat_means,
-            'feat_stds':      feat_stds,
-            'max_len':        max_len,
-            'emb_dim':        args.emb_dim,
-            'hidden':         args.hidden,
-            'n_layers':       args.n_layers,
-            'dropout':        args.dropout,
-            'n_actions':      N_ACTIONS,
-            'proc_mean':      proc_mean, 'proc_std': proc_std,
-            'rem_mean':       rem_mean,  'rem_std':  rem_std,
-        },
-    }, model_path)
+    model_path = f"models/rims_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pth"
+    torch.save(save_dict, model_path)
     print(f"\n[OK] {model_path}")
 
 
