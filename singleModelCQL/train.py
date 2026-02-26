@@ -79,6 +79,7 @@ def main():
     parser.add_argument('--seed',     type=int,   default=42)
     parser.add_argument('--patience', type=int,   default=10)
     parser.add_argument('--es_delta', type=float, default=1e-4)
+    parser.add_argument('--steps',    type=int,   default=3, choices=[1, 2, 3])
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -86,17 +87,18 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    suffix = "CONF" if args.confounded else "RCT"
-    base = f"data/single_cql_{suffix}_{args.n_cases}"
+    suffix   = "CONF" if args.confounded else "RCT"
+    base     = f"data/single_cql_{suffix}_{args.n_cases}"
+    step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
 
     print(f"\n{'='*50}")
-    print(f"Training Single-Model CQL - {suffix}")
+    print(f"Training Single-Model CQL - {suffix} | steps={args.steps}")
     print(f"lr={args.lr}, alpha={args.alpha}, epochs={args.epochs}")
     print('='*50)
 
     # Load data
-    df_train = load_pickle(f"{base}_trans_train.pkl")
-    df_val = load_pickle(f"{base}_trans_val.pkl")
+    df_train = load_pickle(f"{base}_trans_train{step_tag}.pkl")
+    df_val = load_pickle(f"{base}_trans_val{step_tag}.pkl")
     print(f"Train: {len(df_train)}, Val: {len(df_val)} transitions")
 
     # Normalize (fit on train only!)
@@ -197,8 +199,8 @@ def main():
     # Save
     model.load_state_dict(best_state)
     os.makedirs("models", exist_ok=True)
-    torch.save({'model': model.state_dict(), 'scaler': scaler, 'config': {'state_dim': STATE_DIM}},
-               f"models/single_cql_{suffix}_{args.n_cases}_s{args.seed}.pth")
+    torch.save({'model': model.state_dict(), 'scaler': scaler, 'config': {'state_dim': STATE_DIM, 'steps': args.steps}},
+               f"models/single_cql_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pth")
 
     print(f"\n[OK] Best val loss: {best_val:.4f}")
     print(f"Next: python singleModelCQL/evaluate.py --n_cases {args.n_cases} {'--confounded' if args.confounded else ''}")

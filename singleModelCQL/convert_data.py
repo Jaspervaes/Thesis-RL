@@ -1,6 +1,4 @@
-"""
-Convert SimBank data to CQL transitions.
-"""
+"""Convert SimBank data to Single-Model CQL transitions."""
 import sys
 import os
 import argparse
@@ -15,98 +13,101 @@ os.chdir(project_root)
 from shared import load_pickle, save_pickle, count_activities, extract_state, get_ir_action, STATE_DIM
 
 
-def extract_transitions(df):
-    """Extract transitions handling skipped interventions."""
+def extract_transitions(df, steps=3):
     transitions = []
-    stats = {'full': 0, 'skip_int2': 0, 'end_int2': 0, 'end_int1': 0, 'skip': 0}
+    z = np.zeros(STATE_DIM, dtype=np.float32)
 
     for _, group in df.groupby('case_nr'):
         group = group.sort_values('timestamp').reset_index(drop=True)
         outcome = float(group['outcome'].iloc[-1])
 
-        # Find Int1
-        int1_rows = group[group['activity'].isin(['start_standard', 'start_priority'])]
-        if int1_rows.empty or int1_rows.index[0] == 0:
-            stats['skip'] += 1
+        int0_rows = group[group['activity'].isin(['start_standard', 'start_priority'])]
+        if int0_rows.empty or int0_rows.index[0] == 0:
             continue
 
-        int1_idx = int1_rows.index[0]
-        action1 = 1 if group.loc[int1_idx, 'activity'] == 'start_priority' else 0
-        state1 = extract_state(group.loc[int1_idx - 1], count_activities(group, int1_idx))
+        i0 = int0_rows.index[0]
+        a0 = 1 if group.loc[i0, 'activity'] == 'start_priority' else 0
+        s0 = extract_state(group.loc[i0 - 1], count_activities(group, i0))
 
-        # Find Int2, Int3
-        int2_rows = group[group['activity'].isin(['contact_headquarters', 'skip_contact']) & (group.index > int1_idx)]
-        int3_rows = group[(group['activity'] == 'calculate_offer') & (group.index > int1_idx)]
-        has_int2, has_int3 = not int2_rows.empty, not int3_rows.empty
-        terminal = np.zeros(STATE_DIM, dtype=np.float32)
+        if steps == 1:
+            transitions.append({'state': s0, 'action': a0, 'reward': outcome,
+                                 'next_state': z.copy(), 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+            continue
 
-        if has_int2 and has_int3:
-            stats['full'] += 1
-            int2_idx, int3_idx = int2_rows.index[0], int3_rows.index[0]
-            action2 = 0 if group.loc[int2_idx, 'activity'] == 'contact_headquarters' else 1
-            action3 = get_ir_action(group.loc[int3_idx].get('interest_rate', 0.08))
-            state2 = extract_state(group.loc[int2_idx - 1], count_activities(group, int2_idx))
-            state3 = extract_state(group.loc[int3_idx - 1], count_activities(group, int3_idx))
+        int1_rows = group[group['activity'].isin(['contact_headquarters', 'skip_contact']) & (group.index > i0)]
+        int2_rows = group[(group['activity'] == 'calculate_offer') & (group.index > i0)]
+        has1, has2 = not int1_rows.empty, not int2_rows.empty
 
-            transitions.append({'state': state1, 'action': action1, 'reward': 0.0, 'next_state': state2, 'terminal': False, 'intervention': 0, 'next_intervention': 1})
-            transitions.append({'state': state2, 'action': action2, 'reward': 0.0, 'next_state': state3, 'terminal': False, 'intervention': 1, 'next_intervention': 2})
-            transitions.append({'state': state3, 'action': action3, 'reward': outcome, 'next_state': terminal, 'terminal': True, 'intervention': 2, 'next_intervention': -1})
+        if steps == 2:
+            if has1:
+                i1 = int1_rows.index[0]
+                a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
+                s1 = extract_state(group.loc[i1 - 1], count_activities(group, i1))
+                transitions += [
+                    {'state': s0, 'action': a0, 'reward': 0.0,     'next_state': s1,      'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                    {'state': s1, 'action': a1, 'reward': outcome,  'next_state': z.copy(), 'terminal': True,  'intervention': 1, 'next_intervention': -1},
+                ]
+            else:
+                transitions.append({'state': s0, 'action': a0, 'reward': outcome,
+                                     'next_state': z.copy(), 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+            continue
 
-        elif not has_int2 and has_int3:
-            stats['skip_int2'] += 1
-            int3_idx = int3_rows.index[0]
-            action3 = get_ir_action(group.loc[int3_idx].get('interest_rate', 0.08))
-            state3 = extract_state(group.loc[int3_idx - 1], count_activities(group, int3_idx))
-
-            transitions.append({'state': state1, 'action': action1, 'reward': 0.0, 'next_state': state3, 'terminal': False, 'intervention': 0, 'next_intervention': 2})
-            transitions.append({'state': state3, 'action': action3, 'reward': outcome, 'next_state': terminal, 'terminal': True, 'intervention': 2, 'next_intervention': -1})
-
-        elif has_int2:
-            stats['end_int2'] += 1
-            int2_idx = int2_rows.index[0]
-            action2 = 0 if group.loc[int2_idx, 'activity'] == 'contact_headquarters' else 1
-            state2 = extract_state(group.loc[int2_idx - 1], count_activities(group, int2_idx))
-
-            transitions.append({'state': state1, 'action': action1, 'reward': 0.0, 'next_state': state2, 'terminal': False, 'intervention': 0, 'next_intervention': 1})
-            transitions.append({'state': state2, 'action': action2, 'reward': outcome, 'next_state': terminal, 'terminal': True, 'intervention': 1, 'next_intervention': -1})
+        # steps == 3
+        if has1 and has2:
+            i1, i2 = int1_rows.index[0], int2_rows.index[0]
+            a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
+            a2 = get_ir_action(group.loc[i2].get('interest_rate', 0.08))
+            s1 = extract_state(group.loc[i1 - 1], count_activities(group, i1))
+            s2 = extract_state(group.loc[i2 - 1], count_activities(group, i2))
+            transitions += [
+                {'state': s0, 'action': a0, 'reward': 0.0,     'next_state': s1,      'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                {'state': s1, 'action': a1, 'reward': 0.0,     'next_state': s2,      'terminal': False, 'intervention': 1, 'next_intervention': 2},
+                {'state': s2, 'action': a2, 'reward': outcome,  'next_state': z.copy(), 'terminal': True,  'intervention': 2, 'next_intervention': -1},
+            ]
+        elif not has1 and has2:
+            i2 = int2_rows.index[0]
+            a2 = get_ir_action(group.loc[i2].get('interest_rate', 0.08))
+            s2 = extract_state(group.loc[i2 - 1], count_activities(group, i2))
+            transitions += [
+                {'state': s0, 'action': a0, 'reward': 0.0,     'next_state': s2,      'terminal': False, 'intervention': 0, 'next_intervention': 2},
+                {'state': s2, 'action': a2, 'reward': outcome,  'next_state': z.copy(), 'terminal': True,  'intervention': 2, 'next_intervention': -1},
+            ]
+        elif has1:
+            i1 = int1_rows.index[0]
+            a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
+            s1 = extract_state(group.loc[i1 - 1], count_activities(group, i1))
+            transitions += [
+                {'state': s0, 'action': a0, 'reward': 0.0,     'next_state': s1,      'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                {'state': s1, 'action': a1, 'reward': outcome,  'next_state': z.copy(), 'terminal': True,  'intervention': 1, 'next_intervention': -1},
+            ]
         else:
-            stats['end_int1'] += 1
-            transitions.append({'state': state1, 'action': action1, 'reward': outcome, 'next_state': terminal, 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+            transitions.append({'state': s0, 'action': a0, 'reward': outcome,
+                                 'next_state': z.copy(), 'terminal': True, 'intervention': 0, 'next_intervention': -1})
 
-    return transitions, stats
+    return transitions
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_cases', type=int, default=10000)
+    parser.add_argument('--n_cases',    type=int, default=10000)
     parser.add_argument('--confounded', action='store_true')
+    parser.add_argument('--steps',      type=int, default=3, choices=[1, 2, 3])
     args = parser.parse_args()
 
-    suffix = "CONF" if args.confounded else "RCT"
-    base = f"data/single_cql_{suffix}_{args.n_cases}"
+    suffix   = "CONF" if args.confounded else "RCT"
+    base     = f"data/single_cql_{suffix}_{args.n_cases}"
+    step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
 
-    print(f"\n{'='*50}")
-    print(f"Converting {suffix} data to transitions")
-    print('='*50)
-
-    # Convert train
     df_train = pd.DataFrame(load_pickle(f"{base}_train.pkl"))
-    train_trans, train_stats = extract_transitions(df_train)
-    print(f"\nTrain: {len(train_trans)} transitions")
-    print(f"  full={train_stats['full']}, skip_int2={train_stats['skip_int2']}")
+    df_val   = pd.DataFrame(load_pickle(f"{base}_val.pkl"))
 
-    # Convert val
-    df_val = pd.DataFrame(load_pickle(f"{base}_val.pkl"))
-    val_trans, val_stats = extract_transitions(df_val)
-    print(f"Val: {len(val_trans)} transitions")
+    train_rows = extract_transitions(df_train, args.steps)
+    val_rows   = extract_transitions(df_val,   args.steps)
 
-    # Save
-    save_pickle(pd.DataFrame(train_trans), f"{base}_trans_train.pkl")
-    save_pickle(pd.DataFrame(val_trans), f"{base}_trans_val.pkl")
-    save_pickle({'state_dim': STATE_DIM, 'n_actions': [2, 2, 3], 'train_stats': train_stats}, f"{base}_meta.pkl")
-
-    print(f"\n[OK] Saved transitions")
-    print(f"Next: python singleModelCQL/train.py --n_cases {args.n_cases} {'--confounded' if args.confounded else ''}")
+    save_pickle(pd.DataFrame(train_rows), f"{base}_trans_train{step_tag}.pkl")
+    save_pickle(pd.DataFrame(val_rows),   f"{base}_trans_val{step_tag}.pkl")
+    print(f"Train: {len(train_rows)}, Val: {len(val_rows)} transitions (steps={args.steps})")
+    print(f"[OK] Saved to {base}_trans_*{step_tag}.pkl")
 
 
 if __name__ == "__main__":

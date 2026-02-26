@@ -40,15 +40,19 @@ class SingleModelCQL(nn.Module):
 
 
 class CQLPolicy:
-    def __init__(self, model, scaler):
-        self.model = model
+    def __init__(self, model, scaler, steps=3):
+        self.model  = model
         self.scaler = scaler
+        self.steps  = steps
         self.counts = {a: 0 for a in TRACKED_ACTIVITIES}
 
     def reset(self):
         self.counts = {a: 0 for a in TRACKED_ACTIVITIES}
 
     def __call__(self, prev_event, int_idx, prefix=None):
+        if int_idx >= self.steps:
+            return bank_policy(prev_event, int_idx)
+
         if prefix:
             self.counts = {a: 0 for a in TRACKED_ACTIVITIES}
             for e in prefix:
@@ -74,16 +78,18 @@ class CQLPolicy:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_cases', type=int, default=10000)
-    parser.add_argument('--confounded', action='store_true')
+    parser.add_argument('--n_cases',      type=int, default=10000)
+    parser.add_argument('--confounded',   action='store_true')
     parser.add_argument('--n_episodes',   type=int, default=1000)
     parser.add_argument('--seed',         type=int, default=1042)
     parser.add_argument('--train_seed',   type=int, default=42)
+    parser.add_argument('--steps',        type=int, default=3, choices=[1, 2, 3])
     parser.add_argument('--results_file', type=str, default=None)
     args = parser.parse_args()
 
-    suffix = "CONF" if args.confounded else "RCT"
-    model_path = f"models/single_cql_{suffix}_{args.n_cases}_s{args.train_seed}.pth"
+    suffix   = "CONF" if args.confounded else "RCT"
+    step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
+    model_path = f"models/single_cql_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth"
     params_path = f"data/single_cql_{suffix}_{args.n_cases}_params.pkl"
 
     print(f"\n{'='*50}")
@@ -96,7 +102,8 @@ def main():
     model.load_state_dict(ckpt['model'])
     model.eval()
 
-    policy = CQLPolicy(model, ckpt['scaler'])
+    steps  = ckpt['config'].get('steps', 3)
+    policy = CQLPolicy(model, ckpt['scaler'], steps=steps)
     params = load_pickle(params_path)
 
     # Evaluate
@@ -110,7 +117,8 @@ def main():
     cql_res = evaluate_policy(policy, args.n_episodes, params, args.seed,
                                use_prefix=True, reset_fn=policy.reset, verbose=True)
 
-    results = {'Bank': bank_res, 'Random': random_res, f'CQL {suffix}': cql_res}
+    label   = f'CQL-SM {suffix} ({steps}-step)'
+    results = {'Bank': bank_res, 'Random': random_res, label: cql_res}
     print_results(results)
     print_action_dist(results)
 
@@ -123,7 +131,7 @@ def main():
         import json
         os.makedirs(os.path.dirname(os.path.abspath(args.results_file)), exist_ok=True)
         with open(args.results_file, 'w') as f:
-            json.dump({'Bank': bank_res['avg'], f'CQL {suffix}': cql_res['avg'], 'Random': random_res['avg']}, f)
+            json.dump({'Bank': bank_res['avg'], label: cql_res['avg'], 'Random': random_res['avg']}, f)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
 SEEDS = [42, 123, 456, 789, 1024]
-ALL_METHODS = ['kmeans', 'lstm', 'rims']
+ALL_METHODS = ['kmeans', 'lstm', 'rims', 'singleModelCQL', 'multiModelCQL']
 ALL_STEPS   = [1, 2, 3]
 
 METHOD_SCRIPTS = {
@@ -43,6 +43,18 @@ METHOD_SCRIPTS = {
         'train':    'rims/train.py',
         'evaluate': 'rims/evaluate.py',
     },
+    'singleModelCQL': {
+        'generate': 'singleModelCQL/generate_data.py',
+        'convert':  'singleModelCQL/convert_data.py',
+        'train':    'singleModelCQL/train.py',
+        'evaluate': 'singleModelCQL/evaluate.py',
+    },
+    'multiModelCQL': {
+        'generate': 'multiModelCQL/generate_data.py',
+        'convert':  'multiModelCQL/convert_data.py',
+        'train':    'multiModelCQL/train.py',
+        'evaluate': 'multiModelCQL/evaluate.py',
+    },
 }
 
 
@@ -55,8 +67,10 @@ def run(cmd, label=""):
 
 
 def data_exists(method, suffix, n_cases):
-    raw = os.path.join(script_dir, f"data/{method}_{suffix}_{n_cases}_raw.pkl")
-    return os.path.exists(raw)
+    # multiModelCQL, lstm, rims, kmeans use _raw.pkl; singleModelCQL uses _train.pkl
+    raw    = os.path.join(script_dir, f"data/{method}_{suffix}_{n_cases}_raw.pkl")
+    params = os.path.join(script_dir, f"data/{method}_{suffix}_{n_cases}_params.pkl")
+    return os.path.exists(raw) or os.path.exists(params)
 
 
 def transitions_exist(method, suffix, n_cases, steps):
