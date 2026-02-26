@@ -134,7 +134,8 @@ def make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len,
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
 
 
-def train_rims(model, target, opt, tr, va, target_fn, args, w_t, w_o, w_q):
+def train_rims(model, target, opt, tr, va, target_fn, args, w_t, w_o, w_q, norm_fn=None):
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=5)
     best_val, best_state = float('inf'), copy.deepcopy(model.state_dict())
     patience_count = 0
     for epoch in range(args.epochs):
@@ -143,13 +144,14 @@ def train_rims(model, target, opt, tr, va, target_fn, args, w_t, w_o, w_q):
         for b in tr:
             a   = b['action'].squeeze(1).to(device)
             r   = b['reward'].squeeze(1).to(device)
+            r_n = norm_fn(r) if norm_fn is not None else r
             pt  = b['proc_time'].squeeze(1).to(device)
             rt_ = b['rem_time'].squeeze(1).to(device)
 
             timing, outcome, q = model(b['acts'].to(device), b['feats'].to(device), b['lens'].squeeze(1))
 
             loss_t = F.mse_loss(timing, torch.stack([pt, rt_], dim=1))
-            loss_o = F.mse_loss(outcome.gather(1, a.unsqueeze(1)).squeeze(1), r)
+            loss_o = F.mse_loss(outcome.gather(1, a.unsqueeze(1)).squeeze(1), r_n)
             with torch.no_grad():
                 tgt = target_fn(b)
             loss_q = F.mse_loss(q.gather(1, a.unsqueeze(1)).squeeze(1), tgt)
@@ -172,6 +174,7 @@ def train_rims(model, target, opt, tr, va, target_fn, args, w_t, w_o, w_q):
                 q_taken = q.gather(1, a.unsqueeze(1)).squeeze(1)
                 vl += F.mse_loss(q_taken, target_fn(b)).item()
         vl /= max(len(va), 1)
+        scheduler.step(vl)
         if vl < best_val - args.es_delta:
             best_val, best_state = vl, copy.deepcopy(model.state_dict())
             patience_count = 0
@@ -231,6 +234,11 @@ def main():
     proc_mean, proc_std = float(all_proc.mean()), float(all_proc.std()) + 1e-8
     rem_mean,  rem_std  = float(all_rem.mean()),  float(all_rem.std())  + 1e-8
 
+    term_r = df_train.loc[df_train['terminal'] == True, 'reward'].values
+    r_mean = float(term_r.mean())
+    r_std  = float(term_r.std()) + 1e-8
+    def norm(r): return (r - r_mean) / r_std
+
     def loader(df, int_idx, shuffle=True):
         return make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len,
                            proc_mean, proc_std, rem_mean, rem_std, args.batch_size, shuffle)
@@ -265,8 +273,8 @@ def main():
         R1, R1t = make_model(N_ACTIONS[0])
         tr0 = loader(df_train, 0); va0 = loader(df_val, 0, False)
         print("\n[Q1]")
-        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr), tr0, va0,
-                           lambda b: b['reward'].squeeze(1).to(device), args, wt, wo, wq)
+        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr, weight_decay=1e-5), tr0, va0,
+                           lambda b: norm(b['reward'].squeeze(1).to(device)), args, wt, wo, wq, norm)
         R1.load_state_dict(best1)
         save_dict = {'R1': R1.state_dict(), 'config': cfg}
 
@@ -277,8 +285,8 @@ def main():
         tr1 = loader(df_train, 1); va1 = loader(df_val, 1, False)
 
         print("\n[Q2]")
-        best2 = train_rims(R2, R2t, optim.Adam(R2.parameters(), args.lr), tr1, va1,
-                           lambda b: b['reward'].squeeze(1).to(device), args, wt, wo, wq)
+        best2 = train_rims(R2, R2t, optim.Adam(R2.parameters(), args.lr, weight_decay=1e-5), tr1, va1,
+                           lambda b: norm(b['reward'].squeeze(1).to(device)), args, wt, wo, wq, norm)
         R2.load_state_dict(best2); R2t.load_state_dict(best2)
 
         print("\n[Q1]")
@@ -286,8 +294,8 @@ def main():
             r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
             with torch.no_grad():
                 nq2 = R2t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-            return term * r + (1 - term) * args.gamma * nq2.max(1)[0]
-        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr), tr0, va0, tgt1_2step, args, wt, wo, wq)
+            return term * norm(r) + (1 - term) * args.gamma * nq2.max(1)[0]
+        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr, weight_decay=1e-5), tr0, va0, tgt1_2step, args, wt, wo, wq, norm)
         R1.load_state_dict(best1)
         save_dict = {'R1': R1.state_dict(), 'R2': R2.state_dict(), 'config': cfg}
 
@@ -300,8 +308,8 @@ def main():
         tr2 = loader(df_train, 2); va2 = loader(df_val, 2, False)
 
         print("\n[Q3]")
-        best3 = train_rims(R3, R3t, optim.Adam(R3.parameters(), args.lr), tr2, va2,
-                           lambda b: b['reward'].squeeze(1).to(device), args, wt, wo, wq)
+        best3 = train_rims(R3, R3t, optim.Adam(R3.parameters(), args.lr, weight_decay=1e-5), tr2, va2,
+                           lambda b: norm(b['reward'].squeeze(1).to(device)), args, wt, wo, wq, norm)
         R3.load_state_dict(best3); R3t.load_state_dict(best3)
 
         print("\n[Q2]")
@@ -309,8 +317,8 @@ def main():
             r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
             with torch.no_grad():
                 nq = R3t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-            return term * r + (1 - term) * args.gamma * nq.max(1)[0]
-        best2 = train_rims(R2, R2t, optim.Adam(R2.parameters(), args.lr), tr1, va1, tgt2, args, wt, wo, wq)
+            return term * norm(r) + (1 - term) * args.gamma * nq.max(1)[0]
+        best2 = train_rims(R2, R2t, optim.Adam(R2.parameters(), args.lr, weight_decay=1e-5), tr1, va1, tgt2, args, wt, wo, wq, norm)
         R2.load_state_dict(best2); R2t.load_state_dict(best2)
 
         print("\n[Q1]")
@@ -319,12 +327,12 @@ def main():
             with torch.no_grad():
                 nq2 = R2t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
                 nq3 = R3t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-            t = term * r
+            t = term * norm(r)
             m = (1 - term).bool()
             if m.any():
                 t[m] = args.gamma * torch.max(nq2[m].max(1)[0], nq3[m].max(1)[0])
             return t
-        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr), tr0, va0, tgt1, args, wt, wo, wq)
+        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr, weight_decay=1e-5), tr0, va0, tgt1, args, wt, wo, wq, norm)
         R1.load_state_dict(best1)
         save_dict = {'R1': R1.state_dict(), 'R2': R2.state_dict(), 'R3': R3.state_dict(), 'config': cfg}
 
