@@ -67,7 +67,9 @@ def make_loader(df, int_idx, batch_size, shuffle=True):
 
 def scale_col(df, col, mask, scaler):
     idx = df.index[mask]
-    df.loc[idx, col] = list(scaler.transform(np.vstack(df.loc[idx, col].values)))
+    scaled = scaler.transform(np.vstack(df.loc[idx, col].values))
+    for i, ix in enumerate(idx):
+        df.at[ix, col] = scaled[i]
 
 
 def train_q(q, qt, opt, tr, va, target_fn, args):
