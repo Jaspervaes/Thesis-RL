@@ -3,11 +3,11 @@ Run all methods × steps (1,2,3) × conditions (RCT, CONF) × seeds.
 Saves aggregated results to results/all_results.json for plotting.
 
 Usage:
-    python run_all_steps.py                          # all methods, all steps, RCT+CONF
-    python run_all_steps.py --methods kmeans lstm    # subset of methods
-    python run_all_steps.py --steps 1 3              # only 1-step and 3-step
-    python run_all_steps.py --no_confounded          # RCT only
-    python run_all_steps.py --n_cases 5000           # smaller dataset
+    python run_all_steps.py                              # all methods, all steps, RCT+CONF
+    python run_all_steps.py --methods kmeans lstm        # subset of methods
+    python run_all_steps.py --steps 1 3                  # only 1-step and 3-step
+    python run_all_steps.py --no_confounded              # RCT only
+    python run_all_steps.py --n_cases 5000               # smaller dataset
 """
 import sys
 import os
@@ -21,7 +21,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
 SEEDS = [42, 123, 456, 789, 1024]
-ALL_METHODS = ['kmeans', 'lstm', 'rims']
+ALL_METHODS = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL']
 ALL_STEPS   = [1, 2, 3]
 
 METHOD_SCRIPTS = {
@@ -43,32 +43,61 @@ METHOD_SCRIPTS = {
         'train':    'rims/train.py',
         'evaluate': 'rims/evaluate.py',
     },
+    'multiModelCQL': {
+        'generate': 'multiModelCQL/generate_data.py',
+        'convert':  'multiModelCQL/convert_data.py',
+        'train':    'multiModelCQL/train.py',
+        'evaluate': 'multiModelCQL/evaluate.py',
+    },
+    'singleModelCQL': {
+        'generate': 'singleModelCQL/generate_data.py',
+        'convert':  'singleModelCQL/convert_data.py',
+        'train':    'singleModelCQL/train.py',
+        'evaluate': 'singleModelCQL/evaluate.py',
+    },
 }
 
+# File prefix used in data/ and models/ directories
+FILE_PREFIX = {
+    'kmeans':       'kmeans',
+    'lstm':         'lstm',
+    'rims':         'rims',
+    'multiModelCQL':  'multi_cql',
+    'singleModelCQL': 'single_cql',
+}
 
-def run(cmd, label=""):
+# singleModelCQL generates _train.pkl/_val.pkl instead of _raw.pkl
+SPLIT_DATA_METHODS = {'singleModelCQL'}
+
+
+def run(cmd):
     print(f"    $ {' '.join(cmd)}", flush=True)
     env = os.environ.copy()
     env['PYTHONIOENCODING'] = 'utf-8'
-    result = subprocess.run(cmd, cwd=script_dir, check=True, env=env)
-    return result
+    subprocess.run(cmd, cwd=script_dir, check=True, env=env)
 
 
 def data_exists(method, suffix, n_cases):
-    raw = os.path.join(script_dir, f"data/{method}_{suffix}_{n_cases}_raw.pkl")
-    return os.path.exists(raw)
+    prefix = FILE_PREFIX[method]
+    if method in SPLIT_DATA_METHODS:
+        path = os.path.join(script_dir, f"data/{prefix}_{suffix}_{n_cases}_train.pkl")
+    else:
+        path = os.path.join(script_dir, f"data/{prefix}_{suffix}_{n_cases}_raw.pkl")
+    return os.path.exists(path)
 
 
 def transitions_exist(method, suffix, n_cases, steps):
+    prefix   = FILE_PREFIX[method]
     step_tag = "" if steps == 3 else f"_steps{steps}"
-    path = os.path.join(script_dir, f"data/{method}_{suffix}_{n_cases}_trans_train{step_tag}.pkl")
+    path = os.path.join(script_dir, f"data/{prefix}_{suffix}_{n_cases}_trans_train{step_tag}.pkl")
     return os.path.exists(path)
 
 
 def model_exists(method, suffix, n_cases, seed, steps):
+    prefix   = FILE_PREFIX[method]
     step_tag = "" if steps == 3 else f"_steps{steps}"
-    ext = "pkl" if method == "kmeans" else "pth"
-    path = os.path.join(script_dir, f"models/{method}_{suffix}_{n_cases}_s{seed}{step_tag}.{ext}")
+    ext      = "pkl" if method == "kmeans" else "pth"
+    path = os.path.join(script_dir, f"models/{prefix}_{suffix}_{n_cases}_s{seed}{step_tag}.{ext}")
     return os.path.exists(path)
 
 
@@ -138,9 +167,9 @@ def run_combination(method, suffix, steps, n_cases, n_episodes, extra_train_args
 
 def aggregate(seed_results, method_label):
     """Compute mean/std across seeds for Bank, method, and Random."""
-    bank_avgs   = [v['Bank']          for v in seed_results.values()]
-    random_avgs = [v['Random']        for v in seed_results.values()]
-    method_avgs = [v[method_label]    for v in seed_results.values()]
+    bank_avgs   = [v['Bank']       for v in seed_results.values()]
+    random_avgs = [v['Random']     for v in seed_results.values()]
+    method_avgs = [v[method_label] for v in seed_results.values()]
     return {
         'Bank':   {'mean': float(np.mean(bank_avgs)),   'std': float(np.std(bank_avgs)),   'per_seed': bank_avgs},
         'Random': {'mean': float(np.mean(random_avgs)), 'std': float(np.std(random_avgs)), 'per_seed': random_avgs},
@@ -148,14 +177,14 @@ def aggregate(seed_results, method_label):
     }
 
 
-def print_summary(all_results):
+def print_summary(all_results, methods):
     print(f"\n{'='*70}")
     print("SUMMARY — all methods × steps × conditions")
     print('='*70)
-    print(f"{'Method':<10} {'Cond':<6} {'Steps':<6} {'Bank':>10} {'Policy':>10} {'Random':>10} {'Gain':>8}")
+    print(f"{'Method':<14} {'Cond':<6} {'Steps':<6} {'Bank':>10} {'Policy':>10} {'Random':>10} {'Gain':>8}")
     print('-'*70)
 
-    for method in ALL_METHODS:
+    for method in methods:
         for suffix in ['RCT', 'CONF']:
             for steps in ALL_STEPS:
                 key = f"{method}_{suffix}_{steps}"
@@ -167,7 +196,7 @@ def print_summary(all_results):
                 policy_key = [k for k in agg if k not in ('Bank', 'Random')][0]
                 pol_m = agg[policy_key]['mean']
                 gain  = ((pol_m / bank_m) - 1) * 100 if bank_m > 0 else float('nan')
-                print(f"{method:<10} {suffix:<6} {steps:<6} {bank_m:>10.1f} {pol_m:>10.1f} {rand_m:>10.1f} {gain:>7.1f}%")
+                print(f"{method:<14} {suffix:<6} {steps:<6} {bank_m:>10.1f} {pol_m:>10.1f} {rand_m:>10.1f} {gain:>7.1f}%")
 
 
 def main():
@@ -227,7 +256,7 @@ def main():
                     json.dump(all_results, f, indent=2)
                 print(f"  [saved] {args.results_out}")
 
-    print_summary(all_results)
+    print_summary(all_results, args.methods)
     print(f"\n[OK] All results saved to {args.results_out}")
     print(f"     Run: python plot_results.py  to generate thesis figures")
 

@@ -16,9 +16,9 @@ from shared import (
 )
 
 
-def extract_transitions(df):
+def extract_transitions(df, steps=3):
     rows = []
-    z = np.zeros(STATE_DIM, dtype=np.float32)  # terminal next_state placeholder
+    z = np.zeros(STATE_DIM, dtype=np.float32)
 
     for _, group in df.groupby('case_nr'):
         group = group.sort_values('timestamp').reset_index(drop=True)
@@ -33,6 +33,11 @@ def extract_transitions(df):
         # Q1 state is 5-dim (base features only)
         s0 = extract_state(group.loc[i0 - 1], count_activities(group, i0))[:5]
 
+        if steps == 1:
+            rows.append({'state': s0, 'action': a0, 'reward': outcome,
+                         'next_state': z.copy(), 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+            continue
+
         int1_rows = group[
             group['activity'].isin(['contact_headquarters', 'skip_contact']) &
             (group.index > i0)
@@ -40,6 +45,24 @@ def extract_transitions(df):
         int2_rows = group[(group['activity'] == 'calculate_offer') & (group.index > i0)]
         has1, has2 = not int1_rows.empty, not int2_rows.empty
 
+        if steps == 2:
+            if has1:
+                i1 = int1_rows.index[0]
+                a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
+                s1 = extract_state(group.loc[i1 - 1], count_activities(group, i1))
+                rows += [
+                    {'state': s0, 'action': a0, 'reward': 0.0, 'next_state': s1,
+                     'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                    {'state': s1, 'action': a1, 'reward': outcome,
+                     'next_state': z.copy(), 'terminal': True, 'intervention': 1, 'next_intervention': -1},
+                ]
+            else:
+                # Priority path: outcome determined by bank at int2
+                rows.append({'state': s0, 'action': a0, 'reward': outcome,
+                             'next_state': z.copy(), 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+            continue
+
+        # steps == 3
         if has1 and has2:
             i1, i2 = int1_rows.index[0], int2_rows.index[0]
             a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
@@ -47,9 +70,9 @@ def extract_transitions(df):
             s1 = extract_state(group.loc[i1 - 1], count_activities(group, i1))
             s2 = extract_state(group.loc[i2 - 1], count_activities(group, i2))
             rows += [
-                {'state': s0, 'action': a0, 'reward': 0.0,     'next_state': s1,     'terminal': False, 'intervention': 0, 'next_intervention': 1},
-                {'state': s1, 'action': a1, 'reward': 0.0,     'next_state': s2,     'terminal': False, 'intervention': 1, 'next_intervention': 2},
-                {'state': s2, 'action': a2, 'reward': outcome,  'next_state': z.copy(), 'terminal': True,  'intervention': 2, 'next_intervention': -1},
+                {'state': s0, 'action': a0, 'reward': 0.0,    'next_state': s1,       'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                {'state': s1, 'action': a1, 'reward': 0.0,    'next_state': s2,       'terminal': False, 'intervention': 1, 'next_intervention': 2},
+                {'state': s2, 'action': a2, 'reward': outcome, 'next_state': z.copy(), 'terminal': True,  'intervention': 2, 'next_intervention': -1},
             ]
 
         elif not has1 and has2:
@@ -57,8 +80,8 @@ def extract_transitions(df):
             a2 = get_ir_action(group.loc[i2].get('interest_rate', 0.08))
             s2 = extract_state(group.loc[i2 - 1], count_activities(group, i2))
             rows += [
-                {'state': s0, 'action': a0, 'reward': 0.0,     'next_state': s2,     'terminal': False, 'intervention': 0, 'next_intervention': 2},
-                {'state': s2, 'action': a2, 'reward': outcome,  'next_state': z.copy(), 'terminal': True,  'intervention': 2, 'next_intervention': -1},
+                {'state': s0, 'action': a0, 'reward': 0.0,    'next_state': s2,       'terminal': False, 'intervention': 0, 'next_intervention': 2},
+                {'state': s2, 'action': a2, 'reward': outcome, 'next_state': z.copy(), 'terminal': True,  'intervention': 2, 'next_intervention': -1},
             ]
 
         elif has1:
@@ -66,12 +89,13 @@ def extract_transitions(df):
             a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
             s1 = extract_state(group.loc[i1 - 1], count_activities(group, i1))
             rows += [
-                {'state': s0, 'action': a0, 'reward': 0.0,     'next_state': s1,     'terminal': False, 'intervention': 0, 'next_intervention': 1},
-                {'state': s1, 'action': a1, 'reward': outcome,  'next_state': z.copy(), 'terminal': True,  'intervention': 1, 'next_intervention': -1},
+                {'state': s0, 'action': a0, 'reward': 0.0,    'next_state': s1,       'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                {'state': s1, 'action': a1, 'reward': outcome, 'next_state': z.copy(), 'terminal': True,  'intervention': 1, 'next_intervention': -1},
             ]
 
         else:
-            rows.append({'state': s0, 'action': a0, 'reward': outcome, 'next_state': z.copy(), 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+            rows.append({'state': s0, 'action': a0, 'reward': outcome,
+                         'next_state': z.copy(), 'terminal': True, 'intervention': 0, 'next_intervention': -1})
 
     return rows
 
@@ -81,21 +105,23 @@ def main():
     parser.add_argument('--n_cases',    type=int, default=10000)
     parser.add_argument('--confounded', action='store_true')
     parser.add_argument('--seed',       type=int, default=42)
+    parser.add_argument('--steps',      type=int, default=3, choices=[1, 2, 3])
     args = parser.parse_args()
 
     suffix = "CONF" if args.confounded else "RCT"
     base = f"data/multi_cql_{suffix}_{args.n_cases}"
+    step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
 
     df = load_pickle(f"{base}_raw.pkl")
     df_train, df_val = split_train_val(df, val_ratio=0.2, seed=args.seed)
 
-    train_rows = extract_transitions(df_train)
-    val_rows   = extract_transitions(df_val)
+    train_rows = extract_transitions(df_train, args.steps)
+    val_rows   = extract_transitions(df_val,   args.steps)
 
-    save_pickle(pd.DataFrame(train_rows), f"{base}_trans_train.pkl")
-    save_pickle(pd.DataFrame(val_rows),   f"{base}_trans_val.pkl")
-    print(f"Train: {len(train_rows)}, Val: {len(val_rows)} transitions")
-    print(f"[OK] Saved to {base}_trans_*.pkl")
+    save_pickle(pd.DataFrame(train_rows), f"{base}_trans_train{step_tag}.pkl")
+    save_pickle(pd.DataFrame(val_rows),   f"{base}_trans_val{step_tag}.pkl")
+    print(f"Train: {len(train_rows)}, Val: {len(val_rows)} transitions (steps={args.steps})")
+    print(f"[OK] Saved to {base}_trans_*{step_tag}.pkl")
 
 
 if __name__ == "__main__":

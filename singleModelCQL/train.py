@@ -1,9 +1,8 @@
-"""
-Train Single-Model CQL.
-"""
+"""Train Single-Model CQL."""
 import sys
 import os
 import argparse
+import copy
 import numpy as np
 import torch
 import torch.nn as nn
@@ -17,7 +16,7 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle, save_pickle, STATE_DIM
+from shared import load_pickle, STATE_DIM
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -27,7 +26,7 @@ class SingleModelCQL(nn.Module):
         super().__init__()
         self.valid_actions = [2, 2, 3]
         layers = []
-        input_dim = state_dim + 3  # state + intervention one-hot
+        input_dim = state_dim + 3
         for h in hidden_dims:
             layers.extend([nn.Linear(input_dim, h), nn.ReLU(), nn.LayerNorm(h)])
             input_dim = h
@@ -56,29 +55,30 @@ class TransitionDataset(Dataset):
     def __getitem__(self, i):
         r = self.df.iloc[i]
         return {
-            'state': torch.FloatTensor(r['state']),
-            'action': torch.LongTensor([r['action']]),
-            'reward': torch.FloatTensor([r['reward']]),
-            'next_state': torch.FloatTensor(r['next_state']),
-            'terminal': torch.FloatTensor([r['terminal']]),
+            'state':        torch.FloatTensor(r['state']),
+            'action':       torch.LongTensor([r['action']]),
+            'reward':       torch.FloatTensor([r['reward']]),
+            'next_state':   torch.FloatTensor(r['next_state']),
+            'terminal':     torch.FloatTensor([r['terminal']]),
             'intervention': torch.LongTensor([r['intervention']]),
-            'next_int': torch.LongTensor([r['next_intervention']])
+            'next_int':     torch.LongTensor([r['next_intervention']]),
         }
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_cases', type=int, default=10000)
+    parser.add_argument('--n_cases',    type=int,   default=10000)
     parser.add_argument('--confounded', action='store_true')
-    parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--batch_size', type=int, default=256)
-    parser.add_argument('--lr', type=float, default=3e-4)
-    parser.add_argument('--alpha', type=float, default=1.0)
-    parser.add_argument('--gamma', type=float, default=0.99)
-    parser.add_argument('--tau',  type=float, default=0.005)
-    parser.add_argument('--seed',     type=int,   default=42)
-    parser.add_argument('--patience', type=int,   default=10)
-    parser.add_argument('--es_delta', type=float, default=1e-4)
+    parser.add_argument('--steps',      type=int,   default=3, choices=[1, 2, 3])
+    parser.add_argument('--epochs',     type=int,   default=50)
+    parser.add_argument('--batch_size', type=int,   default=256)
+    parser.add_argument('--lr',         type=float, default=3e-4)
+    parser.add_argument('--alpha',      type=float, default=1.0)
+    parser.add_argument('--gamma',      type=float, default=0.99)
+    parser.add_argument('--tau',        type=float, default=0.005)
+    parser.add_argument('--seed',       type=int,   default=42)
+    parser.add_argument('--patience',   type=int,   default=10)
+    parser.add_argument('--es_delta',   type=float, default=1e-4)
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -86,69 +86,58 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    suffix = "CONF" if args.confounded else "RCT"
-    base = f"data/single_cql_{suffix}_{args.n_cases}"
+    suffix   = "CONF" if args.confounded else "RCT"
+    base     = f"data/single_cql_{suffix}_{args.n_cases}"
+    step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
+    print(f"Training Single-Model CQL -- {suffix} | lr={args.lr} alpha={args.alpha} steps={args.steps}")
 
-    print(f"\n{'='*50}")
-    print(f"Training Single-Model CQL - {suffix}")
-    print(f"lr={args.lr}, alpha={args.alpha}, epochs={args.epochs}")
-    print('='*50)
-
-    # Load data
-    df_train = load_pickle(f"{base}_trans_train.pkl")
-    df_val = load_pickle(f"{base}_trans_val.pkl")
+    df_train = load_pickle(f"{base}_trans_train{step_tag}.pkl")
+    df_val   = load_pickle(f"{base}_trans_val{step_tag}.pkl")
     print(f"Train: {len(df_train)}, Val: {len(df_val)} transitions")
 
-    # Normalize (fit on train only!)
     scaler = StandardScaler()
     train_states = np.vstack(df_train['state'].values)
     scaler.fit(train_states)
 
     df_train = df_train.copy()
-    df_val = df_val.copy()
-    df_train['state'] = list(scaler.transform(train_states))
+    df_val   = df_val.copy()
+    df_train['state']      = list(scaler.transform(train_states))
     df_train['next_state'] = list(scaler.transform(np.vstack(df_train['next_state'].values)))
-    df_val['state'] = list(scaler.transform(np.vstack(df_val['state'].values)))
-    df_val['next_state'] = list(scaler.transform(np.vstack(df_val['next_state'].values)))
+    df_val['state']        = list(scaler.transform(np.vstack(df_val['state'].values)))
+    df_val['next_state']   = list(scaler.transform(np.vstack(df_val['next_state'].values)))
 
-    # Model
-    model = SingleModelCQL(STATE_DIM).to(device)
+    model  = SingleModelCQL(STATE_DIM).to(device)
     target = SingleModelCQL(STATE_DIM).to(device)
     target.load_state_dict(model.state_dict())
     opt = optim.Adam(model.parameters(), lr=args.lr)
 
     train_loader = DataLoader(TransitionDataset(df_train), batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(TransitionDataset(df_val), batch_size=args.batch_size)
+    val_loader   = DataLoader(TransitionDataset(df_val),   batch_size=args.batch_size)
 
-    best_val, best_state = float('inf'), None
-    patience_count = 0
+    best_val, best_state, patience_count = float('inf'), copy.deepcopy(model.state_dict()), 0
 
     for epoch in range(args.epochs):
-        # Train
         model.train()
         train_loss = 0
         for batch in train_loader:
-            s = batch['state'].to(device)
-            a = batch['action'].squeeze(1).to(device)
-            r = batch['reward'].squeeze(1).to(device)
-            ns = batch['next_state'].to(device)
-            term = batch['terminal'].squeeze(1).to(device)
+            s      = batch['state'].to(device)
+            a      = batch['action'].squeeze(1).to(device)
+            r      = batch['reward'].squeeze(1).to(device)
+            ns     = batch['next_state'].to(device)
+            term   = batch['terminal'].squeeze(1).to(device)
             int_id = batch['intervention'].squeeze(1).to(device)
-            next_int = batch['next_int'].squeeze(1).to(device)
+            ni     = batch['next_int'].squeeze(1).to(device)
 
-            q = model(s, int_id)
+            q   = model(s, int_id)
             q_a = q.gather(1, a.unsqueeze(1)).squeeze(1)
 
             with torch.no_grad():
-                next_int_safe = next_int.clone()
-                next_int_safe[next_int_safe < 0] = 0
-                max_nq = target.masked_q(ns, next_int_safe).max(1)[0]
+                ni_safe = ni.clone()
+                ni_safe[ni_safe < 0] = 0
+                max_nq  = target.masked_q(ns, ni_safe).max(1)[0]
                 targets = r + args.gamma * max_nq * (1 - term)
 
-            td = F.mse_loss(q_a, targets)
-            cql = args.alpha * (torch.logsumexp(q, 1).mean() - q_a.mean())
-            loss = td + cql
-
+            loss = F.mse_loss(q_a, targets) + args.alpha * (torch.logsumexp(q, 1).mean() - q_a.mean())
             opt.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -159,49 +148,45 @@ def main():
 
             train_loss += loss.item()
 
-        # Validate
         model.eval()
         val_loss = 0
         with torch.no_grad():
             for batch in val_loader:
-                s = batch['state'].to(device)
-                a = batch['action'].squeeze(1).to(device)
-                r = batch['reward'].squeeze(1).to(device)
-                ns = batch['next_state'].to(device)
-                term = batch['terminal'].squeeze(1).to(device)
+                s      = batch['state'].to(device)
+                a      = batch['action'].squeeze(1).to(device)
+                r      = batch['reward'].squeeze(1).to(device)
+                ns     = batch['next_state'].to(device)
+                term   = batch['terminal'].squeeze(1).to(device)
                 int_id = batch['intervention'].squeeze(1).to(device)
-                next_int = batch['next_int'].squeeze(1).to(device)
+                ni     = batch['next_int'].squeeze(1).to(device)
 
-                q = model(s, int_id)
+                q   = model(s, int_id)
                 q_a = q.gather(1, a.unsqueeze(1)).squeeze(1)
-                next_int_safe = next_int.clone()
-                next_int_safe[next_int_safe < 0] = 0
-                max_nq = target.masked_q(ns, next_int_safe).max(1)[0]
+                ni_safe = ni.clone()
+                ni_safe[ni_safe < 0] = 0
+                max_nq  = target.masked_q(ns, ni_safe).max(1)[0]
                 targets = r + args.gamma * max_nq * (1 - term)
                 val_loss += F.mse_loss(q_a, targets).item()
 
         val_loss /= len(val_loader)
         if val_loss < best_val - args.es_delta:
-            best_val = val_loss
-            best_state = model.state_dict().copy()
+            best_val, best_state = val_loss, copy.deepcopy(model.state_dict())
             patience_count = 0
         else:
             patience_count += 1
 
         if (epoch + 1) % 10 == 0:
-            print(f"Epoch {epoch+1}: train={train_loss/len(train_loader):.4f}, val={val_loss:.4f}")
+            print(f"  [{epoch+1:3d}/{args.epochs}] train={train_loss/len(train_loader):.4f}  val={val_loss:.4f}")
         if patience_count >= args.patience:
             print(f"  [early stop] epoch {epoch+1}, best_val={best_val:.4f}")
             break
 
-    # Save
     model.load_state_dict(best_state)
     os.makedirs("models", exist_ok=True)
-    torch.save({'model': model.state_dict(), 'scaler': scaler, 'config': {'state_dim': STATE_DIM}},
-               f"models/single_cql_{suffix}_{args.n_cases}_s{args.seed}.pth")
-
-    print(f"\n[OK] Best val loss: {best_val:.4f}")
-    print(f"Next: python singleModelCQL/evaluate.py --n_cases {args.n_cases} {'--confounded' if args.confounded else ''}")
+    model_path = f"models/single_cql_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pth"
+    torch.save({'model': model.state_dict(), 'scaler': scaler,
+                'config': {'state_dim': STATE_DIM, 'steps': args.steps}}, model_path)
+    print(f"\n[OK] {model_path}")
 
 
 if __name__ == "__main__":
