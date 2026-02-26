@@ -68,37 +68,63 @@ def main():
     parser.add_argument('--k',          type=int,   default=50)
     parser.add_argument('--gamma',      type=float, default=0.99)
     parser.add_argument('--seed',       type=int,   default=42)
+    parser.add_argument('--steps',      type=int,   default=3, choices=[1, 2, 3])
     args = parser.parse_args()
 
     np.random.seed(args.seed)
     suffix = "CONF" if args.confounded else "RCT"
     base = f"data/kmeans_{suffix}_{args.n_cases}"
-    print(f"Training K-means RL — {suffix} | k={args.k} γ={args.gamma}")
+    step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
+    print(f"Training K-means RL -- {suffix} | k={args.k} gamma={args.gamma} steps={args.steps}")
 
-    df_train = load_pickle(f"{base}_trans_train.pkl")
+    df_train = load_pickle(f"{base}_trans_train{step_tag}.pkl")
 
-    km0, sc0 = fit_clusters(df_train, 0, args.k, args.seed)
-    km1, sc1 = fit_clusters(df_train, 1, args.k, args.seed)
-    km2, sc2 = fit_clusters(df_train, 2, args.k, args.seed)
-    print(f"  Clusters fit: int0={args.k}, int1={args.k}, int2={args.k}")
+    if args.steps == 1:
+        km0, sc0 = fit_clusters(df_train, 0, args.k, args.seed)
+        print(f"  Clusters fit: int0={args.k}")
+        print("\n[Q1]")
+        q1 = fitted_q(df_train, 0, km0, sc0, N_ACTIONS[0], args.gamma, {})
+        save_dict = {
+            'models':   {0: (km0, sc0)},
+            'q_tables': {0: q1},
+            'config':   {'k': args.k, 'n_actions': N_ACTIONS, 'gamma': args.gamma, 'steps': 1},
+        }
 
-    print("\n[Q3]")
-    q3 = fitted_q(df_train, 2, km2, sc2, N_ACTIONS[2], args.gamma, {})
+    elif args.steps == 2:
+        km0, sc0 = fit_clusters(df_train, 0, args.k, args.seed)
+        km1, sc1 = fit_clusters(df_train, 1, args.k, args.seed)
+        print(f"  Clusters fit: int0={args.k}, int1={args.k}")
+        print("\n[Q2]")
+        q2 = fitted_q(df_train, 1, km1, sc1, N_ACTIONS[1], args.gamma, {})
+        print("[Q1]")
+        q1 = fitted_q(df_train, 0, km0, sc0, N_ACTIONS[0], args.gamma, {1: (km1, sc1, q2)})
+        save_dict = {
+            'models':   {0: (km0, sc0), 1: (km1, sc1)},
+            'q_tables': {0: q1, 1: q2},
+            'config':   {'k': args.k, 'n_actions': N_ACTIONS, 'gamma': args.gamma, 'steps': 2},
+        }
 
-    print("[Q2]")
-    q2 = fitted_q(df_train, 1, km1, sc1, N_ACTIONS[1], args.gamma, {2: (km2, sc2, q3)})
-
-    print("[Q1]")
-    q1 = fitted_q(df_train, 0, km0, sc0, N_ACTIONS[0], args.gamma,
-                  {1: (km1, sc1, q2), 2: (km2, sc2, q3)})
+    else:  # steps == 3
+        km0, sc0 = fit_clusters(df_train, 0, args.k, args.seed)
+        km1, sc1 = fit_clusters(df_train, 1, args.k, args.seed)
+        km2, sc2 = fit_clusters(df_train, 2, args.k, args.seed)
+        print(f"  Clusters fit: int0={args.k}, int1={args.k}, int2={args.k}")
+        print("\n[Q3]")
+        q3 = fitted_q(df_train, 2, km2, sc2, N_ACTIONS[2], args.gamma, {})
+        print("[Q2]")
+        q2 = fitted_q(df_train, 1, km1, sc1, N_ACTIONS[1], args.gamma, {2: (km2, sc2, q3)})
+        print("[Q1]")
+        q1 = fitted_q(df_train, 0, km0, sc0, N_ACTIONS[0], args.gamma,
+                      {1: (km1, sc1, q2), 2: (km2, sc2, q3)})
+        save_dict = {
+            'models':   {0: (km0, sc0), 1: (km1, sc1), 2: (km2, sc2)},
+            'q_tables': {0: q1, 1: q2, 2: q3},
+            'config':   {'k': args.k, 'n_actions': N_ACTIONS, 'gamma': args.gamma, 'steps': 3},
+        }
 
     os.makedirs("models", exist_ok=True)
-    model_path = f"models/kmeans_{suffix}_{args.n_cases}_s{args.seed}.pkl"
-    save_pickle({
-        'models':   {0: (km0, sc0), 1: (km1, sc1), 2: (km2, sc2)},
-        'q_tables': {0: q1, 1: q2, 2: q3},
-        'config':   {'k': args.k, 'n_actions': N_ACTIONS, 'gamma': args.gamma},
-    }, model_path)
+    model_path = f"models/kmeans_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pkl"
+    save_pickle(save_dict, model_path)
     print(f"\n[OK] {model_path}")
 
 

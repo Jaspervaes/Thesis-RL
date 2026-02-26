@@ -31,7 +31,7 @@ def main():
     base = f"data/rims_{suffix}_{args.n_cases}"
     save_pickle(df, f"{base}_raw.pkl")
     save_pickle(params, f"{base}_params.pkl")
-    print(f"[OK] {df['case_nr'].nunique()} cases → {base}_*.pkl")
+    print(f"[OK] {df['case_nr'].nunique()} cases -> {base}_*.pkl")
 
 
 if __name__ == "__main__":
