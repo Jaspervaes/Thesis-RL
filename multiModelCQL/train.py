@@ -1,4 +1,4 @@
-"""Train Multi-Model CQL: Q3 → Q2 → Q1."""
+"""Train Multi-Model CQL: Q3 -> Q2 -> Q1."""
 import sys
 import os
 import argparse
@@ -126,6 +126,7 @@ def main():
     parser.add_argument('--seed',       type=int,   default=42)
     parser.add_argument('--patience',   type=int,   default=10)
     parser.add_argument('--es_delta',   type=float, default=1e-4)
+    parser.add_argument('--steps',      type=int,   default=3, choices=[1, 2, 3])
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -135,24 +136,26 @@ def main():
 
     suffix = "CONF" if args.confounded else "RCT"
     base = f"data/multi_cql_{suffix}_{args.n_cases}"
-    print(f"Training Multi-Model CQL — {suffix} | lr={args.lr} α={args.alpha} epochs={args.epochs}")
+    step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
+    print(f"Training Multi-Model CQL -- {suffix} | lr={args.lr} alpha={args.alpha} steps={args.steps}")
 
-    df_train = load_pickle(f"{base}_trans_train.pkl")
-    df_val   = load_pickle(f"{base}_trans_val.pkl")
+    df_train = load_pickle(f"{base}_trans_train{step_tag}.pkl")
+    df_val   = load_pickle(f"{base}_trans_val{step_tag}.pkl")
     print(f"Train: {len(df_train)}, Val: {len(df_val)} transitions")
 
-    # Fit one scaler per intervention on training states
+    # Fit one scaler per trained intervention
+    n_trained = args.steps
     scalers = [
         StandardScaler().fit(np.vstack(df_train.loc[df_train['intervention'] == i, 'state'].values))
-        for i in range(3)
+        for i in range(n_trained)
     ]
 
-    # Apply scalers: states by intervention, next_states by next_intervention
     for df in [df_train, df_val]:
         for i, sc in enumerate(scalers):
             scale_col(df, 'state', df['intervention'] == i, sc)
-        for ni, sc in [(1, scalers[1]), (2, scalers[2])]:
-            scale_col(df, 'next_state', df['next_intervention'] == ni, sc)
+        # Scale next_state by the intervention it belongs to
+        for ni in range(1, n_trained):
+            scale_col(df, 'next_state', df['next_intervention'] == ni, scalers[ni])
 
     term_r = df_train.loc[df_train['terminal'] == True, 'reward'].values
     r_mean, r_std = float(term_r.mean()), float(term_r.std()) + 1e-8
@@ -161,9 +164,6 @@ def main():
         return (r - r_mean) / r_std
 
     bs = args.batch_size
-    tr0, va0 = make_loader(df_train, 0, bs), make_loader(df_val, 0, bs, False)
-    tr1, va1 = make_loader(df_train, 1, bs), make_loader(df_val, 1, bs, False)
-    tr2, va2 = make_loader(df_train, 2, bs), make_loader(df_val, 2, bs, False)
 
     def make_net(i):
         q  = QNetwork(STATE_DIMS[i], N_ACTIONS[i]).to(device)
@@ -171,50 +171,83 @@ def main():
         qt.load_state_dict(q.state_dict())
         return q, qt
 
-    Q1, Q1t = make_net(0)
-    Q2, Q2t = make_net(1)
-    Q3, Q3t = make_net(2)
-    opt1 = optim.Adam(Q1.parameters(), lr=args.lr)
-    opt2 = optim.Adam(Q2.parameters(), lr=args.lr)
-    opt3 = optim.Adam(Q3.parameters(), lr=args.lr)
-
-    print("\n[Q3]")
-    best3, _ = train_q(Q3, Q3t, opt3, tr2, va2,
-                       lambda b: norm(b['reward'].squeeze(1).to(device)), args)
-    Q3.load_state_dict(best3)
-    Q3t.load_state_dict(best3)
-
-    print("\n[Q2]")
-    def tgt_q2(b):
-        ns, r, term = b['next_state'].to(device), b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
-        return (1 - term) * args.gamma * Q3t(ns).max(1)[0] + term * norm(r)
-    best2, _ = train_q(Q2, Q2t, opt2, tr1, va1, tgt_q2, args)
-    Q2.load_state_dict(best2)
-    Q2t.load_state_dict(best2)
-
-    print("\n[Q1]")
-    def tgt_q1(b):
-        ns   = b['next_state'].to(device)
-        r    = b['reward'].squeeze(1).to(device)
-        term = b['terminal'].squeeze(1).to(device)
-        ni   = b['next_intervention'].squeeze(1).to(device)
-        t    = torch.zeros_like(r)
-        t[term == 1] = norm(r[term == 1])
-        m1, m2 = (ni == 1) & (term == 0), (ni == 2) & (term == 0)
-        if m1.any(): t[m1] = args.gamma * Q2t(ns[m1]).max(1)[0]
-        if m2.any(): t[m2] = args.gamma * Q3t(ns[m2]).max(1)[0]
-        return t
-    best1, _ = train_q(Q1, Q1t, opt1, tr0, va0, tgt_q1, args)
-    Q1.load_state_dict(best1)
-
     os.makedirs("models", exist_ok=True)
-    model_path = f"models/multi_cql_{suffix}_{args.n_cases}_s{args.seed}.pth"
-    torch.save({
-        'Q1': Q1.state_dict(), 'Q2': Q2.state_dict(), 'Q3': Q3.state_dict(),
-        'scaler1': scalers[0], 'scaler2': scalers[1], 'scaler3': scalers[2],
-        'config': {'state_dims': STATE_DIMS, 'n_actions': N_ACTIONS, 'hidden': HIDDEN},
-        'reward_stats': {'mean': r_mean, 'std': r_std},
-    }, model_path)
+    model_path = f"models/multi_cql_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pth"
+    save_dict = {}
+
+    if args.steps == 1:
+        Q1, Q1t = make_net(0)
+        tr0 = make_loader(df_train, 0, bs); va0 = make_loader(df_val, 0, bs, False)
+        print("\n[Q1]")
+        best1, _ = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr), tr0, va0,
+                           lambda b: norm(b['reward'].squeeze(1).to(device)), args)
+        Q1.load_state_dict(best1)
+        save_dict = {'Q1': Q1.state_dict(), 'scaler1': scalers[0],
+                     'config': {'state_dims': STATE_DIMS, 'n_actions': N_ACTIONS, 'hidden': HIDDEN, 'steps': 1},
+                     'reward_stats': {'mean': r_mean, 'std': r_std}}
+
+    elif args.steps == 2:
+        Q1, Q1t = make_net(0)
+        Q2, Q2t = make_net(1)
+        tr0 = make_loader(df_train, 0, bs); va0 = make_loader(df_val, 0, bs, False)
+        tr1 = make_loader(df_train, 1, bs); va1 = make_loader(df_val, 1, bs, False)
+
+        print("\n[Q2]")
+        best2, _ = train_q(Q2, Q2t, optim.Adam(Q2.parameters(), args.lr), tr1, va1,
+                           lambda b: norm(b['reward'].squeeze(1).to(device)), args)
+        Q2.load_state_dict(best2); Q2t.load_state_dict(best2)
+
+        print("\n[Q1]")
+        def tgt_q1_2step(b):
+            ns, r, term = b['next_state'].to(device), b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
+            return term * norm(r) + (1 - term) * args.gamma * Q2t(ns).max(1)[0]
+        best1, _ = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr), tr0, va0, tgt_q1_2step, args)
+        Q1.load_state_dict(best1)
+        save_dict = {'Q1': Q1.state_dict(), 'Q2': Q2.state_dict(),
+                     'scaler1': scalers[0], 'scaler2': scalers[1],
+                     'config': {'state_dims': STATE_DIMS, 'n_actions': N_ACTIONS, 'hidden': HIDDEN, 'steps': 2},
+                     'reward_stats': {'mean': r_mean, 'std': r_std}}
+
+    else:  # steps == 3
+        Q1, Q1t = make_net(0)
+        Q2, Q2t = make_net(1)
+        Q3, Q3t = make_net(2)
+        tr0 = make_loader(df_train, 0, bs); va0 = make_loader(df_val, 0, bs, False)
+        tr1 = make_loader(df_train, 1, bs); va1 = make_loader(df_val, 1, bs, False)
+        tr2 = make_loader(df_train, 2, bs); va2 = make_loader(df_val, 2, bs, False)
+
+        print("\n[Q3]")
+        best3, _ = train_q(Q3, Q3t, optim.Adam(Q3.parameters(), args.lr), tr2, va2,
+                           lambda b: norm(b['reward'].squeeze(1).to(device)), args)
+        Q3.load_state_dict(best3); Q3t.load_state_dict(best3)
+
+        print("\n[Q2]")
+        def tgt_q2(b):
+            ns, r, term = b['next_state'].to(device), b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
+            return (1 - term) * args.gamma * Q3t(ns).max(1)[0] + term * norm(r)
+        best2, _ = train_q(Q2, Q2t, optim.Adam(Q2.parameters(), args.lr), tr1, va1, tgt_q2, args)
+        Q2.load_state_dict(best2); Q2t.load_state_dict(best2)
+
+        print("\n[Q1]")
+        def tgt_q1(b):
+            ns   = b['next_state'].to(device)
+            r    = b['reward'].squeeze(1).to(device)
+            term = b['terminal'].squeeze(1).to(device)
+            ni   = b['next_intervention'].squeeze(1).to(device)
+            t    = torch.zeros_like(r)
+            t[term == 1] = norm(r[term == 1])
+            m1, m2 = (ni == 1) & (term == 0), (ni == 2) & (term == 0)
+            if m1.any(): t[m1] = args.gamma * Q2t(ns[m1]).max(1)[0]
+            if m2.any(): t[m2] = args.gamma * Q3t(ns[m2]).max(1)[0]
+            return t
+        best1, _ = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr), tr0, va0, tgt_q1, args)
+        Q1.load_state_dict(best1)
+        save_dict = {'Q1': Q1.state_dict(), 'Q2': Q2.state_dict(), 'Q3': Q3.state_dict(),
+                     'scaler1': scalers[0], 'scaler2': scalers[1], 'scaler3': scalers[2],
+                     'config': {'state_dims': STATE_DIMS, 'n_actions': N_ACTIONS, 'hidden': HIDDEN, 'steps': 3},
+                     'reward_stats': {'mean': r_mean, 'std': r_std}}
+
+    torch.save(save_dict, model_path)
     print(f"\n[OK] {model_path}")
 
 

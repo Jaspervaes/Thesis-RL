@@ -118,6 +118,7 @@ def make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, ba
 
 
 def train_q(model, target, opt, tr, va, target_fn, args):
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=5)
     best_val, best_state = float('inf'), copy.deepcopy(model.state_dict())
     patience_count = 0
     for epoch in range(args.epochs):
@@ -150,6 +151,7 @@ def train_q(model, target, opt, tr, va, target_fn, args):
                 q_taken = q.gather(1, a.unsqueeze(1)).squeeze(1)
                 vl += F.mse_loss(q_taken, target_fn(b)).item()
         vl /= max(len(va), 1)
+        scheduler.step(vl)
         if vl < best_val - args.es_delta:
             best_val, best_state = vl, copy.deepcopy(model.state_dict())
             patience_count = 0
@@ -203,6 +205,11 @@ def main():
     all_prefixes = list(df_train['prefix']) + list(df_train['next_prefix'])
     max_len = max((len(p) for p in all_prefixes), default=1)
 
+    term_r = df_train.loc[df_train['terminal'] == True, 'reward'].values
+    r_mean = float(term_r.mean())
+    r_std  = float(term_r.std()) + 1e-8
+    def norm(r): return (r - r_mean) / r_std
+
     bs = args.batch_size
 
     def make_model(n_act):
@@ -234,8 +241,8 @@ def main():
         Q1, Q1t = make_model(N_ACTIONS[0])
         tr0 = loader(df_train, 0); va0 = loader(df_val, 0, False)
         print("\n[Q1]")
-        best1 = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr), tr0, va0,
-                        lambda b: b['reward'].squeeze(1).to(device), args)
+        best1 = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr, weight_decay=1e-5), tr0, va0,
+                        lambda b: norm(b['reward'].squeeze(1).to(device)), args)
         Q1.load_state_dict(best1)
         save_dict = {'Q1': Q1.state_dict(), 'config': cfg}
 
@@ -246,8 +253,8 @@ def main():
         tr1 = loader(df_train, 1); va1 = loader(df_val, 1, False)
 
         print("\n[Q2]")
-        best2 = train_q(Q2, Q2t, optim.Adam(Q2.parameters(), args.lr), tr1, va1,
-                        lambda b: b['reward'].squeeze(1).to(device), args)
+        best2 = train_q(Q2, Q2t, optim.Adam(Q2.parameters(), args.lr, weight_decay=1e-5), tr1, va1,
+                        lambda b: norm(b['reward'].squeeze(1).to(device)), args)
         Q2.load_state_dict(best2); Q2t.load_state_dict(best2)
 
         print("\n[Q1]")
@@ -255,8 +262,8 @@ def main():
             r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
             with torch.no_grad():
                 nq2 = Q2t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-            return term * r + (1 - term) * args.gamma * nq2.max(1)[0]
-        best1 = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr), tr0, va0, tgt1_2step, args)
+            return term * norm(r) + (1 - term) * args.gamma * nq2.max(1)[0]
+        best1 = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr, weight_decay=1e-5), tr0, va0, tgt1_2step, args)
         Q1.load_state_dict(best1)
         save_dict = {'Q1': Q1.state_dict(), 'Q2': Q2.state_dict(), 'config': cfg}
 
@@ -269,8 +276,8 @@ def main():
         tr2 = loader(df_train, 2); va2 = loader(df_val, 2, False)
 
         print("\n[Q3]")
-        best3 = train_q(Q3, Q3t, optim.Adam(Q3.parameters(), args.lr), tr2, va2,
-                        lambda b: b['reward'].squeeze(1).to(device), args)
+        best3 = train_q(Q3, Q3t, optim.Adam(Q3.parameters(), args.lr, weight_decay=1e-5), tr2, va2,
+                        lambda b: norm(b['reward'].squeeze(1).to(device)), args)
         Q3.load_state_dict(best3); Q3t.load_state_dict(best3)
 
         print("\n[Q2]")
@@ -278,14 +285,14 @@ def main():
             r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
             with torch.no_grad():
                 nq = Q3t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-            return term * r + (1 - term) * args.gamma * nq.max(1)[0]
-        best2 = train_q(Q2, Q2t, optim.Adam(Q2.parameters(), args.lr), tr1, va1, tgt2, args)
+            return term * norm(r) + (1 - term) * args.gamma * nq.max(1)[0]
+        best2 = train_q(Q2, Q2t, optim.Adam(Q2.parameters(), args.lr, weight_decay=1e-5), tr1, va1, tgt2, args)
         Q2.load_state_dict(best2); Q2t.load_state_dict(best2)
 
         print("\n[Q1]")
         def tgt1(b):
             r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
-            t = term * r
+            t = term * norm(r)
             with torch.no_grad():
                 nq2 = Q2t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
                 nq3 = Q3t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
@@ -293,7 +300,7 @@ def main():
             if m1.any():
                 t[m1] = args.gamma * torch.max(nq2[m1].max(1)[0], nq3[m1].max(1)[0])
             return t
-        best1 = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr), tr0, va0, tgt1, args)
+        best1 = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr, weight_decay=1e-5), tr0, va0, tgt1, args)
         Q1.load_state_dict(best1)
         save_dict = {'Q1': Q1.state_dict(), 'Q2': Q2.state_dict(), 'Q3': Q3.state_dict(), 'config': cfg}
 
