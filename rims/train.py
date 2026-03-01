@@ -63,8 +63,10 @@ def build_vocab_and_stats(df):
     activity_to_idx = {a: i + 1 for i, a in enumerate(activities)}
     activity_to_idx[''] = 0
 
-    feat_means = {c: np.nanmean([float(e.get(c, 0)) for e in all_events]) for c in FEATURE_COLS}
-    feat_stds  = {c: max(np.nanstd([float(e.get(c, 0)) for e in all_events]), 1e-8) for c in FEATURE_COLS}
+    def _vals(c):
+        return [float(v) for e in all_events if not np.isnan(v := float(e.get(c, 0) or 0))]
+    feat_means = {c: (np.mean(_vals(c)) if _vals(c) else 0.0) for c in FEATURE_COLS}
+    feat_stds  = {c: max(np.std(_vals(c))  if _vals(c) else 0.0, 1e-8) for c in FEATURE_COLS}
 
     return activity_to_idx, feat_means, feat_stds
 
@@ -81,7 +83,8 @@ def encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len):
         for j, e in enumerate(p[:seq_len]):
             acts[i, j] = activity_to_idx.get(e.get('activity', ''), 0)
             for k, col in enumerate(FEATURE_COLS):
-                feats[i, j, k] = (float(e.get(col, 0)) - feat_means[col]) / feat_stds[col]
+                v = float(e.get(col, 0) or 0)
+                feats[i, j, k] = 0.0 if np.isnan(v) else (v - feat_means[col]) / feat_stds[col]
     return acts, feats, lens
 
 
