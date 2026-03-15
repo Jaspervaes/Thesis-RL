@@ -27,9 +27,15 @@ from matplotlib.lines import Line2D
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # ── Style ─────────────────────────────────────────────────────────────────────
-METHODS   = ['kmeans', 'lstm', 'rims']
-METHOD_LABELS = {'kmeans': 'K-Means', 'lstm': 'LSTM-DQN', 'rims': 'RIMS'}
-COLORS    = {'kmeans': '#2196F3', 'lstm': '#FF9800', 'rims': '#4CAF50'}
+METHODS   = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL']
+METHOD_LABELS = {
+    'kmeans': 'K-Means', 'lstm': 'LSTM-DQN', 'rims': 'RIMS',
+    'multiModelCQL': 'CQL-MM', 'singleModelCQL': 'CQL-SM',
+}
+COLORS    = {
+    'kmeans': '#2196F3', 'lstm': '#FF9800', 'rims': '#4CAF50',
+    'multiModelCQL': '#9C27B0', 'singleModelCQL': '#F44336',
+}
 STEP_LABELS = {1: '1-step\n(Int. 0)', 2: '2-step\n(Int. 0–1)', 3: '3-step\n(Int. 0–2)'}
 SUFFIX_STYLES = {'RCT': '-', 'CONF': '--'}
 SUFFIX_MARKERS = {'RCT': 'o', 'CONF': 's'}
@@ -143,7 +149,7 @@ def fig1_marginal_contribution(results, out_dir, suffixes):
 
 def fig2_absolute_performance(results, out_dir, suffixes):
     n_suf = len(suffixes)
-    fig, axes = plt.subplots(1, n_suf, figsize=(7 * n_suf, 5), sharey=True)
+    fig, axes = plt.subplots(1, n_suf, figsize=(9 * n_suf, 5), sharey=True)
     if n_suf == 1:
         axes = [axes]
 
@@ -199,14 +205,17 @@ def fig2_absolute_performance(results, out_dir, suffixes):
 # ── Figure 3: RCT vs CONF Comparison ─────────────────────────────────────────
 
 def fig3_rct_vs_conf(results, out_dir):
-    if not all(f"{m}_CONF_3" in results for m in METHODS):
+    available = [m for m in METHODS if f"{m}_CONF_3" in results or f"{m}_CONF_1" in results]
+    if not available:
         print("[skip] fig3: CONF results not available")
         return
 
-    n_methods = len(METHODS)
-    fig, axes = plt.subplots(1, n_methods, figsize=(5 * n_methods, 5), sharey=True)
+    n_methods = len(available)
+    fig, axes = plt.subplots(1, n_methods, figsize=(4 * n_methods, 5), sharey=True)
+    if n_methods == 1:
+        axes = [axes]
 
-    for ax, method in zip(axes, METHODS):
+    for ax, method in zip(axes, available):
         steps_list = [1, 2, 3]
         x = np.arange(len(steps_list))
         width = 0.32
@@ -231,7 +240,7 @@ def fig3_rct_vs_conf(results, out_dir):
         ax.set_xlabel('Steps')
         ax.set_xticks(x)
         ax.set_xticklabels(['1-step', '2-step', '3-step'])
-        if method == METHODS[0]:
+        if method == available[0]:
             ax.set_ylabel('% Gain vs Bank Policy')
         ax.legend(frameon=False)
         ax.grid(axis='y', alpha=0.3)
@@ -294,7 +303,7 @@ def fig4_seed_variance(results, out_dir, suffixes):
 
         ax.axhline(0, color='grey', lw=0.8, linestyle='--', alpha=0.6)
         ax.set_xticks(positions)
-        ax.set_xticklabels([METHOD_LABELS[m] for _ in [1,2,3] for m in METHODS], rotation=45, ha='right', fontsize=8)
+        ax.set_xticklabels(labels_all, rotation=45, ha='right', fontsize=8)
         ax.set_title(f'{suffix} Data')
         ax.set_ylabel('% Gain vs Bank Policy' if suffix == suffixes[0] else '')
         ax.grid(axis='y', alpha=0.3)
@@ -315,7 +324,7 @@ def fig4_seed_variance(results, out_dir, suffixes):
 
 def fig5_gain_heatmap(results, out_dir, suffixes):
     n_suf = len(suffixes)
-    fig, axes = plt.subplots(1, n_suf, figsize=(5 * n_suf, 3.5))
+    fig, axes = plt.subplots(1, n_suf, figsize=(5 * n_suf, 4.5))
     if n_suf == 1:
         axes = [axes]
 

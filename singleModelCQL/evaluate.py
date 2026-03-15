@@ -1,6 +1,4 @@
-"""
-Evaluate Single-Model CQL against baselines.
-"""
+"""Evaluate Single-Model CQL against bank and random baselines."""
 import sys
 import os
 import argparse
@@ -15,7 +13,7 @@ os.chdir(project_root)
 
 from shared import (
     load_pickle, bank_policy, random_policy, evaluate_policy,
-    print_results, print_action_dist, BASE_FEATURES, TRACKED_ACTIVITIES, STATE_DIM
+    print_results, print_action_dist, BASE_FEATURES, TRACKED_ACTIVITIES, STATE_DIM,
 )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -78,54 +76,40 @@ class CQLPolicy:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_cases',      type=int, default=10000)
+    parser.add_argument('--n_cases',      type=int,  default=10000)
     parser.add_argument('--confounded',   action='store_true')
-    parser.add_argument('--n_episodes',   type=int, default=1000)
-    parser.add_argument('--seed',         type=int, default=1042)
-    parser.add_argument('--train_seed',   type=int, default=42)
-    parser.add_argument('--steps',        type=int, default=3, choices=[1, 2, 3])
-    parser.add_argument('--results_file', type=str, default=None)
+    parser.add_argument('--steps',        type=int,  default=3, choices=[1, 2, 3])
+    parser.add_argument('--n_episodes',   type=int,  default=1000)
+    parser.add_argument('--seed',         type=int,  default=1042)
+    parser.add_argument('--train_seed',   type=int,  default=42)
+    parser.add_argument('--results_file', type=str,  default=None)
     args = parser.parse_args()
 
-    suffix   = "CONF" if args.confounded else "RCT"
-    step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
+    suffix     = "CONF" if args.confounded else "RCT"
+    step_tag   = "" if args.steps == 3 else f"_steps{args.steps}"
     model_path = f"models/single_cql_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth"
-    params_path = f"data/single_cql_{suffix}_{args.n_cases}_params.pkl"
 
-    print(f"\n{'='*50}")
-    print(f"Evaluating Single-Model CQL - {suffix}")
-    print('='*50)
-
-    # Load model
-    ckpt = torch.load(model_path, map_location=device, weights_only=False)
+    ckpt  = torch.load(model_path, map_location=device, weights_only=False)
     model = SingleModelCQL(ckpt['config']['state_dim']).to(device)
     model.load_state_dict(ckpt['model'])
     model.eval()
 
-    steps  = ckpt['config'].get('steps', 3)
-    policy = CQLPolicy(model, ckpt['scaler'], steps=steps)
-    params = load_pickle(params_path)
+    label  = f'CQL-SM {suffix} ({args.steps}-step)'
+    policy = CQLPolicy(model, ckpt['scaler'], steps=args.steps)
+    params = load_pickle(f"data/single_cql_{suffix}_{args.n_cases}_params.pkl")
 
-    # Evaluate
-    print("\nEvaluating Bank...")
-    bank_res = evaluate_policy(bank_policy, args.n_episodes, params, args.seed, verbose=True)
+    print(f"Evaluating Single-Model CQL — {suffix} | steps={args.steps}")
+    bank_res   = evaluate_policy(bank_policy,   args.n_episodes, params, args.seed)
+    random_res = evaluate_policy(random_policy, args.n_episodes, params, args.seed)
+    cql_res    = evaluate_policy(policy, args.n_episodes, params, args.seed,
+                                 use_prefix=True, reset_fn=policy.reset)
 
-    print("\nEvaluating Random...")
-    random_res = evaluate_policy(random_policy, args.n_episodes, params, args.seed, verbose=True)
-
-    print(f"\nEvaluating CQL {suffix}...")
-    cql_res = evaluate_policy(policy, args.n_episodes, params, args.seed,
-                               use_prefix=True, reset_fn=policy.reset, verbose=True)
-
-    label   = f'CQL-SM {suffix} ({steps}-step)'
     results = {'Bank': bank_res, 'Random': random_res, label: cql_res}
     print_results(results)
     print_action_dist(results)
 
     gain = ((cql_res['avg'] / bank_res['avg']) - 1) * 100
-    print(f"\n{'='*50}")
-    print(f"CQL {'beats' if gain > 0 else 'underperforms'} Bank by {gain:+.1f}%")
-    print('='*50)
+    print(f"\nCQL-SM {'beats' if gain > 0 else 'underperforms'} Bank by {gain:+.1f}%")
 
     if args.results_file:
         import json

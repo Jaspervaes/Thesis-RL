@@ -20,8 +20,6 @@ Thumbs.db
 # Local IDE / Claude settings
 .claude/
 
-# Results (regeneratable)
-results/
 
 # Windows system files
 desktop.ini

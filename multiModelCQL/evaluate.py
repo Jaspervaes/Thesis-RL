@@ -67,21 +67,22 @@ class CQLPolicy:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_cases',      type=int, default=10000)
+    parser.add_argument('--n_cases',      type=int,  default=10000)
     parser.add_argument('--confounded',   action='store_true')
-    parser.add_argument('--n_episodes',   type=int, default=1000)
-    parser.add_argument('--seed',         type=int, default=1042)
-    parser.add_argument('--train_seed',   type=int, default=42)
-    parser.add_argument('--steps',        type=int, default=3, choices=[1, 2, 3])
-    parser.add_argument('--results_file', type=str, default=None)
+    parser.add_argument('--steps',        type=int,  default=3, choices=[1, 2, 3])
+    parser.add_argument('--n_episodes',   type=int,  default=1000)
+    parser.add_argument('--seed',         type=int,  default=1042)
+    parser.add_argument('--train_seed',   type=int,  default=42)
+    parser.add_argument('--results_file', type=str,  default=None)
     args = parser.parse_args()
 
     suffix   = "CONF" if args.confounded else "RCT"
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
-    ckpt = torch.load(f"models/multi_cql_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth",
-                      map_location=device, weights_only=False)
-    cfg   = ckpt['config']
-    steps = cfg.get('steps', 3)
+    ckpt = torch.load(
+        f"models/multi_cql_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth",
+        map_location=device, weights_only=False,
+    )
+    cfg = ckpt['config']
 
     def load_net(i):
         q = QNetwork(cfg['state_dims'][i], cfg['n_actions'][i], cfg['hidden']).to(device)
@@ -89,13 +90,20 @@ def main():
         q.eval()
         return q
 
-    nets    = {i: load_net(i) for i in range(steps)}
-    scalers = {i: ckpt[f'scaler{i+1}'] for i in range(steps)}
-    policy  = CQLPolicy(nets, scalers, steps=steps)
-    params  = load_pickle(f"data/multi_cql_{suffix}_{args.n_cases}_params.pkl")
-    label   = f'CQL-MM {suffix} ({steps}-step)'
+    nets    = {0: load_net(0)}
+    scalers = {0: ckpt['scaler1']}
+    if args.steps >= 2:
+        nets[1]    = load_net(1)
+        scalers[1] = ckpt['scaler2']
+    if args.steps >= 3:
+        nets[2]    = load_net(2)
+        scalers[2] = ckpt['scaler3']
 
-    print(f"Evaluating Multi-Model CQL — {suffix} | steps={steps}")
+    label  = f'CQL-MM {suffix} ({args.steps}-step)'
+    policy = CQLPolicy(nets, scalers, steps=args.steps)
+    params = load_pickle(f"data/multi_cql_{suffix}_{args.n_cases}_params.pkl")
+
+    print(f"Evaluating Multi-Model CQL — {suffix} | steps={args.steps}")
     bank_res   = evaluate_policy(bank_policy,   args.n_episodes, params, args.seed)
     random_res = evaluate_policy(random_policy, args.n_episodes, params, args.seed)
     cql_res    = evaluate_policy(policy, args.n_episodes, params, args.seed,
