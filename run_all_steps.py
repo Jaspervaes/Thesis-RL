@@ -89,7 +89,10 @@ def data_exists(method, suffix, n_cases):
 def transitions_exist(method, suffix, n_cases, steps):
     prefix   = FILE_PREFIX[method]
     step_tag = "" if steps == 3 else f"_steps{steps}"
-    path = os.path.join(script_dir, f"data/{prefix}_{suffix}_{n_cases}_trans_train{step_tag}.pkl")
+    if method == 'rims':
+        path = os.path.join(script_dir, f"data/{prefix}_{suffix}_{n_cases}_simulator{step_tag}.pkl")
+    else:
+        path = os.path.join(script_dir, f"data/{prefix}_{suffix}_{n_cases}_trans_train{step_tag}.pkl")
     return os.path.exists(path)
 
 
