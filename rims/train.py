@@ -1,21 +1,22 @@
-"""Train RIMS offline RL: multi-task LSTM (timing + outcome + Q) per intervention, Q3 → Q2 → Q1."""
+"""Train RIMS-DQN: online LSTM-DQN in learned simulator with epsilon-greedy exploration."""
 import sys
 import os
 import argparse
 import copy
+import random
+from collections import deque
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle
+from shared import load_pickle, FEATURE_COLS, N_ACTIONS, LSTM_DQN, encode
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -100,244 +101,238 @@ class RIMSDataset(Dataset):
         self.rem_times  = rem_times
 
     def __len__(self):
-        return len(self.actions)
-
-    def __getitem__(self, i):
-        return {
-            'acts':    torch.LongTensor(self.acts[i]),
-            'feats':   torch.FloatTensor(self.feats[i]),
-            'lens':    torch.LongTensor([self.lens[i]]),
-            'n_acts':  torch.LongTensor(self.n_acts[i]),
-            'n_feats': torch.FloatTensor(self.n_feats[i]),
-            'n_lens':  torch.LongTensor([self.n_lens[i]]),
-            'action':    torch.LongTensor([self.actions[i]]),
-            'reward':    torch.FloatTensor([self.rewards[i]]),
-            'terminal':  torch.FloatTensor([self.terminals[i]]),
-            'proc_time': torch.FloatTensor([self.proc_times[i]]),
-            'rem_time':  torch.FloatTensor([self.rem_times[i]]),
-        }
+        return len(self.buffer)
 
 
-def make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len,
-                proc_mean, proc_std, rem_mean, rem_std, batch_size, shuffle=True):
-    """DataLoader for one intervention subset, or None if empty."""
-    sub = df[df['intervention'] == int_idx]
-    if sub.empty:
-        return None
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
 
-    acts,   feats,   lens   = encode(sub['prefix'].tolist(),      activity_to_idx, feat_means, feat_stds, max_len)
-    n_acts, n_feats, n_lens = encode(sub['next_prefix'].tolist(), activity_to_idx, feat_means, feat_stds, max_len)
-
-    proc = [(t - proc_mean) / proc_std for t in sub['proc_time'].tolist()]
-    rem  = [(t - rem_mean)  / rem_std  for t in sub['rem_time'].tolist()]
-
-    ds = RIMSDataset(acts, feats, lens, n_acts, n_feats, n_lens,
-                     sub['action'].tolist(), sub['reward'].tolist(),
-                     [float(t) for t in sub['terminal'].tolist()], proc, rem)
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+def encode_batch(prefixes, activity_to_idx, feat_means, feat_stds, max_len):
+    """Encode and move to device, replacing NaN with 0."""
+    acts, feats, lens = encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len)
+    feats_t = torch.FloatTensor(feats)
+    feats_t = torch.nan_to_num(feats_t, nan=0.0, posinf=0.0, neginf=0.0)
+    return (torch.LongTensor(acts).to(device),
+            feats_t.to(device),
+            torch.LongTensor(lens))
 
 
-def train_rims(model, target, opt, tr, va, target_fn, args, w_t, w_o, w_q, norm_fn=None):
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=5)
-    best_val, best_state = float('inf'), copy.deepcopy(model.state_dict())
-    patience_count = 0
-    for epoch in range(args.epochs):
-        model.train()
-        tl = 0.0
-        for b in tr:
-            a   = b['action'].squeeze(1).to(device)
-            r   = b['reward'].squeeze(1).to(device)
-            r_n = norm_fn(r) if norm_fn is not None else r
-            pt  = b['proc_time'].squeeze(1).to(device)
-            rt_ = b['rem_time'].squeeze(1).to(device)
+def update_q(q_net, q_target, optimizer, replay, batch_size,
+             activity_to_idx, feat_means, feat_stds, max_len,
+             gamma, tau, next_q_target=None):
+    """One gradient step on a Q-network from its replay buffer."""
+    if len(replay) < batch_size:
+        return
 
-            timing, outcome, q = model(b['acts'].to(device), b['feats'].to(device), b['lens'].squeeze(1))
+    prefixes, actions, rewards, next_prefixes, dones = replay.sample(batch_size)
 
-            loss_t = F.mse_loss(timing, torch.stack([pt, rt_], dim=1))
-            loss_o = F.mse_loss(outcome.gather(1, a.unsqueeze(1)).squeeze(1), r_n)
-            with torch.no_grad():
-                tgt = target_fn(b)
-            loss_q = F.mse_loss(q.gather(1, a.unsqueeze(1)).squeeze(1), tgt)
+    s_acts, s_feats, s_lens = encode_batch(prefixes, activity_to_idx, feat_means, feat_stds, max_len)
+    actions_t = torch.LongTensor(actions).to(device)
+    rewards_t = torch.FloatTensor(rewards).to(device)
+    dones_t = torch.FloatTensor(dones).to(device)
 
-            loss = w_t * loss_t + w_o * loss_o + w_q * loss_q
-            opt.zero_grad()
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
-            for p, tp in zip(model.parameters(), target.parameters()):
-                tp.data.copy_(args.tau * p.data + (1 - args.tau) * tp.data)
-            tl += loss.item()
+    # Current Q-values
+    q_vals = q_net(s_acts, s_feats, s_lens)
+    q_taken = q_vals.gather(1, actions_t.unsqueeze(1)).squeeze(1)
 
-        model.eval()
-        vl = 0.0
-        with torch.no_grad():
-            for b in va:
-                a  = b['action'].squeeze(1).to(device)
-                _, _, q = model(b['acts'].to(device), b['feats'].to(device), b['lens'].squeeze(1))
-                q_taken = q.gather(1, a.unsqueeze(1)).squeeze(1)
-                vl += F.mse_loss(q_taken, target_fn(b)).item()
-        vl /= max(len(va), 1)
-        scheduler.step(vl)
-        if vl < best_val - args.es_delta:
-            best_val, best_state = vl, copy.deepcopy(model.state_dict())
-            patience_count = 0
+    # Target computation (rewards clipped for stability, no normalization)
+    with torch.no_grad():
+        clipped_r = rewards_t.clamp(-5000, 10000) / 1000.0
+        if next_q_target is not None:
+            # Non-terminal: bootstrap from next intervention's target network
+            n_acts, n_feats, n_lens = encode_batch(next_prefixes, activity_to_idx, feat_means, feat_stds, max_len)
+            next_q = next_q_target(n_acts, n_feats, n_lens).max(1)[0]
+            target = clipped_r + (1 - dones_t) * gamma * next_q
         else:
-            patience_count += 1
-        if (epoch + 1) % 10 == 0:
-            print(f"  [{epoch+1:3d}/{args.epochs}] train={tl/len(tr):.4f}  val={vl:.4f}")
-        if patience_count >= args.patience:
-            print(f"  [early stop] epoch {epoch+1}, best_val={best_val:.4f}")
-            break
+            # Terminal intervention: just scaled reward
+            target = clipped_r
 
-    return best_state
+    loss = F.mse_loss(q_taken, target)
+    optimizer.zero_grad()
+    loss.backward()
+    nn.utils.clip_grad_norm_(q_net.parameters(), 1.0)
+    optimizer.step()
+
+    # Soft target update
+    for p, tp in zip(q_net.parameters(), q_target.parameters()):
+        tp.data.copy_(tau * p.data + (1 - tau) * tp.data)
+
+    return loss.item()
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_cases',    type=int,   default=10000)
-    parser.add_argument('--confounded', action='store_true')
-    parser.add_argument('--epochs',     type=int,   default=50)
-    parser.add_argument('--batch_size', type=int,   default=256)
-    parser.add_argument('--lr',         type=float, default=1e-3)
-    parser.add_argument('--gamma',      type=float, default=0.99)
-    parser.add_argument('--tau',        type=float, default=0.005)
-    parser.add_argument('--w_timing',   type=float, default=0.3)
-    parser.add_argument('--w_outcome',  type=float, default=0.3)
-    parser.add_argument('--w_q',        type=float, default=0.4)
-    parser.add_argument('--emb_dim',    type=int,   default=32)
-    parser.add_argument('--hidden',     type=int,   default=128)
-    parser.add_argument('--n_layers',   type=int,   default=2)
-    parser.add_argument('--dropout',    type=float, default=0.2)
-    parser.add_argument('--seed',       type=int,   default=42)
-    parser.add_argument('--patience',   type=int,   default=10)
-    parser.add_argument('--es_delta',   type=float, default=1e-4)
-    parser.add_argument('--steps',      type=int,   default=3, choices=[1, 2, 3])
+    parser.add_argument('--n_cases',     type=int,   default=10000)
+    parser.add_argument('--confounded',  action='store_true')
+    parser.add_argument('--seed',        type=int,   default=42)
+    parser.add_argument('--steps',       type=int,   default=3, choices=[1, 2, 3])
+    parser.add_argument('--n_episodes',  type=int,   default=20000)
+    parser.add_argument('--batch_size',  type=int,   default=128)
+    parser.add_argument('--lr',          type=float, default=1e-3)
+    parser.add_argument('--gamma',       type=float, default=0.99)
+    parser.add_argument('--tau',         type=float, default=0.005)
+    parser.add_argument('--eps_start',   type=float, default=1.0)
+    parser.add_argument('--eps_end',     type=float, default=0.05)
+    parser.add_argument('--eps_decay',   type=float, default=0.00005)
+    parser.add_argument('--buffer_size', type=int,   default=50000)
+    parser.add_argument('--emb_dim',     type=int,   default=32)
+    parser.add_argument('--hidden',      type=int,   default=128)
+    parser.add_argument('--n_layers',    type=int,   default=2)
+    parser.add_argument('--dropout',     type=float, default=0.2)
+    parser.add_argument('--eval_every',  type=int,   default=500)
+    parser.add_argument('--eval_episodes', type=int, default=200)
     args = parser.parse_args()
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
     suffix = "CONF" if args.confounded else "RCT"
-    base   = f"data/rims_{suffix}_{args.n_cases}"
+    base = f"data/rims_{suffix}_{args.n_cases}"
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
-    print(f"Training RIMS — {suffix} | lr={args.lr} w=(t={args.w_timing},o={args.w_outcome},q={args.w_q}) steps={args.steps}")
 
-    df_train = load_pickle(f"{base}_trans_train{step_tag}.pkl")
-    df_val   = load_pickle(f"{base}_trans_val{step_tag}.pkl")
-    print(f"Train: {len(df_train)}, Val: {len(df_val)} transitions")
+    print(f"Training RIMS-DQN — {suffix} | episodes={args.n_episodes} steps={args.steps}")
 
-    activity_to_idx, feat_means, feat_stds = build_vocab_and_stats(df_train)
-    n_activities = len(activity_to_idx)
-    max_len = max((len(p) for p in list(df_train['prefix']) + list(df_train['next_prefix'])), default=1)
+    # Load simulator
+    sim_artifact = load_pickle(f"{base}_simulator{step_tag}.pkl")
 
-    all_proc = df_train['proc_time'].values
-    all_rem  = df_train['rem_time'].values
-    proc_mean, proc_std = float(all_proc.mean()), float(all_proc.std()) + 1e-8
-    rem_mean,  rem_std  = float(all_rem.mean()),  float(all_rem.std())  + 1e-8
+    from rims.simulator import LearnedSimBankEnv
+    env = LearnedSimBankEnv(sim_artifact, steps=args.steps)
 
-    term_r = df_train.loc[df_train['terminal'] == True, 'reward'].values
-    r_mean = float(term_r.mean())
-    r_std  = float(term_r.std()) + 1e-8
-    def norm(r): return (r - r_mean) / r_std
+    activity_to_idx = sim_artifact['activity_to_idx']
+    feat_means = sim_artifact['feat_means']
+    feat_stds = sim_artifact['feat_stds']
+    max_len = sim_artifact['max_len']
+    n_activities = sim_artifact['n_activities']
+    n_features = len(FEATURE_COLS)
 
-    def loader(df, int_idx, shuffle=True):
-        return make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len,
-                           proc_mean, proc_std, rem_mean, rem_std, args.batch_size, shuffle)
-
+    # Create Q-networks per intervention
     def make_model(n_act):
-        m  = RIMS_Model(n_activities, len(FEATURE_COLS), n_act, args.emb_dim, args.hidden, args.n_layers, args.dropout).to(device)
-        mt = RIMS_Model(n_activities, len(FEATURE_COLS), n_act, args.emb_dim, args.hidden, args.n_layers, args.dropout).to(device)
+        m  = LSTM_DQN(n_activities, n_features, n_act, args.emb_dim, args.hidden, args.n_layers, args.dropout).to(device)
+        mt = LSTM_DQN(n_activities, n_features, n_act, args.emb_dim, args.hidden, args.n_layers, args.dropout).to(device)
         mt.load_state_dict(m.state_dict())
         return m, mt
 
-    wt, wo, wq = args.w_timing, args.w_outcome, args.w_q
+    q_nets, q_targets, optimizers, replays = {}, {}, {}, {}
+    for i in range(args.steps):
+        q_nets[i], q_targets[i] = make_model(N_ACTIONS[i])
+        optimizers[i] = optim.Adam(q_nets[i].parameters(), lr=args.lr, weight_decay=1e-5)
+        replays[i] = ReplayBuffer(args.buffer_size)
 
+    # Best validation tracking
+    best_val_reward = -float('inf')
+    best_states = None
+
+    # Training loop
+    episode_rewards = []
+    for episode in range(args.n_episodes):
+        epsilon = max(args.eps_end, args.eps_start - episode * args.eps_decay)
+        prefix, info = env.reset()
+        done = False
+        step_count = 0
+
+        while not done and step_count < 10:
+            int_idx = info['int_idx']
+
+            # Epsilon-greedy action selection
+            if random.random() < epsilon:
+                action = random.randint(0, N_ACTIONS[int_idx] - 1)
+            else:
+                with torch.no_grad():
+                    s_acts, s_feats, s_lens = encode_batch(
+                        [prefix], activity_to_idx, feat_means, feat_stds, max_len)
+                    q = q_nets[int_idx](s_acts, s_feats, s_lens)
+                action = q[0, :N_ACTIONS[int_idx]].argmax().item()
+
+            prev_prefix = copy.deepcopy(prefix)
+            next_prefix, reward, done, truncated, info = env.step(action)
+
+            # Store transition
+            if int_idx < args.steps:
+                replays[int_idx].push(
+                    prev_prefix, action, reward,
+                    copy.deepcopy(next_prefix),
+                    float(done)
+                )
+
+            prefix = next_prefix
+            step_count += 1
+
+        episode_rewards.append(reward)
+
+        # Train each Q-net
+        for i in range(args.steps):
+            if len(replays[i]) >= args.batch_size:
+                # Determine next Q-target for bootstrapping
+                if i == args.steps - 1:
+                    next_qt = None  # terminal intervention
+                else:
+                    next_qt = q_targets[i + 1]
+
+                update_q(q_nets[i], q_targets[i], optimizers[i], replays[i],
+                         args.batch_size, activity_to_idx, feat_means, feat_stds,
+                         max_len, args.gamma, args.tau, next_qt)
+
+        # Logging
+        if (episode + 1) % 100 == 0:
+            recent = episode_rewards[-100:]
+            print(f"  [{episode+1:5d}/{args.n_episodes}] eps={epsilon:.3f}  "
+                  f"avg100={np.mean(recent):.1f}")
+
+        # Validation
+        if (episode + 1) % args.eval_every == 0:
+            val_rewards = []
+            for _ in range(args.eval_episodes):
+                p, info = env.reset()
+                d = False
+                sc = 0
+                while not d and sc < 10:
+                    idx = info['int_idx']
+                    with torch.no_grad():
+                        sa, sf, sl = encode_batch(
+                            [p], activity_to_idx, feat_means, feat_stds, max_len)
+                        q = q_nets[idx](sa, sf, sl)
+                    a = q[0, :N_ACTIONS[idx]].argmax().item()
+                    p, r, d, _, info = env.step(a)
+                    sc += 1
+                val_rewards.append(r)
+
+            val_mean = np.mean(val_rewards)
+            print(f"  [EVAL] episode {episode+1}: val_mean={val_mean:.1f}")
+
+            if val_mean > best_val_reward:
+                best_val_reward = val_mean
+                best_states = {i: copy.deepcopy(q_nets[i].state_dict()) for i in range(args.steps)}
+                print(f"  [BEST] new best val={val_mean:.1f}")
+
+    # Load best states
+    if best_states is not None:
+        for i in range(args.steps):
+            q_nets[i].load_state_dict(best_states[i])
+
+    # Save model
     cfg = {
-        'n_activities':   n_activities,
-        'n_features':     len(FEATURE_COLS),
-        'feature_cols':   FEATURE_COLS,
+        'n_activities':    n_activities,
+        'n_features':      n_features,
+        'feature_cols':    FEATURE_COLS,
         'activity_to_idx': activity_to_idx,
-        'feat_means':     feat_means,
-        'feat_stds':      feat_stds,
-        'max_len':        max_len,
-        'emb_dim':        args.emb_dim,
-        'hidden':         args.hidden,
-        'n_layers':       args.n_layers,
-        'dropout':        args.dropout,
-        'n_actions':      N_ACTIONS,
-        'proc_mean':      proc_mean, 'proc_std': proc_std,
-        'rem_mean':       rem_mean,  'rem_std':  rem_std,
-        'steps':          args.steps,
+        'feat_means':      feat_means,
+        'feat_stds':       feat_stds,
+        'max_len':         max_len,
+        'emb_dim':         args.emb_dim,
+        'hidden':          args.hidden,
+        'n_layers':        args.n_layers,
+        'dropout':         args.dropout,
+        'n_actions':       N_ACTIONS,
+        'steps':           args.steps,
     }
 
-    if args.steps == 1:
-        R1, R1t = make_model(N_ACTIONS[0])
-        tr0 = loader(df_train, 0); va0 = loader(df_val, 0, False)
-        print("\n[Q1]")
-        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr, weight_decay=1e-5), tr0, va0,
-                           lambda b: norm(b['reward'].squeeze(1).to(device)), args, wt, wo, wq, norm)
-        R1.load_state_dict(best1)
-        save_dict = {'R1': R1.state_dict(), 'config': cfg}
-
-    elif args.steps == 2:
-        R1, R1t = make_model(N_ACTIONS[0])
-        R2, R2t = make_model(N_ACTIONS[1])
-        tr0 = loader(df_train, 0); va0 = loader(df_val, 0, False)
-        tr1 = loader(df_train, 1); va1 = loader(df_val, 1, False)
-
-        print("\n[Q2]")
-        best2 = train_rims(R2, R2t, optim.Adam(R2.parameters(), args.lr, weight_decay=1e-5), tr1, va1,
-                           lambda b: norm(b['reward'].squeeze(1).to(device)), args, wt, wo, wq, norm)
-        R2.load_state_dict(best2); R2t.load_state_dict(best2)
-
-        print("\n[Q1]")
-        def tgt1_2step(b):
-            r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
-            with torch.no_grad():
-                nq2 = R2t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-            return term * norm(r) + (1 - term) * args.gamma * nq2.max(1)[0]
-        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr, weight_decay=1e-5), tr0, va0, tgt1_2step, args, wt, wo, wq, norm)
-        R1.load_state_dict(best1)
-        save_dict = {'R1': R1.state_dict(), 'R2': R2.state_dict(), 'config': cfg}
-
-    else:  # steps == 3
-        R1, R1t = make_model(N_ACTIONS[0])
-        R2, R2t = make_model(N_ACTIONS[1])
-        R3, R3t = make_model(N_ACTIONS[2])
-        tr0 = loader(df_train, 0); va0 = loader(df_val, 0, False)
-        tr1 = loader(df_train, 1); va1 = loader(df_val, 1, False)
-        tr2 = loader(df_train, 2); va2 = loader(df_val, 2, False)
-
-        print("\n[Q3]")
-        best3 = train_rims(R3, R3t, optim.Adam(R3.parameters(), args.lr, weight_decay=1e-5), tr2, va2,
-                           lambda b: norm(b['reward'].squeeze(1).to(device)), args, wt, wo, wq, norm)
-        R3.load_state_dict(best3); R3t.load_state_dict(best3)
-
-        print("\n[Q2]")
-        def tgt2(b):
-            r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
-            with torch.no_grad():
-                nq = R3t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-            return term * norm(r) + (1 - term) * args.gamma * nq.max(1)[0]
-        best2 = train_rims(R2, R2t, optim.Adam(R2.parameters(), args.lr, weight_decay=1e-5), tr1, va1, tgt2, args, wt, wo, wq, norm)
-        R2.load_state_dict(best2); R2t.load_state_dict(best2)
-
-        print("\n[Q1]")
-        def tgt1(b):
-            r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
-            with torch.no_grad():
-                nq2 = R2t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-                nq3 = R3t.q_values(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-            t = term * norm(r)
-            m = (1 - term).bool()
-            if m.any():
-                t[m] = args.gamma * torch.max(nq2[m].max(1)[0], nq3[m].max(1)[0])
-            return t
-        best1 = train_rims(R1, R1t, optim.Adam(R1.parameters(), args.lr, weight_decay=1e-5), tr0, va0, tgt1, args, wt, wo, wq, norm)
-        R1.load_state_dict(best1)
-        save_dict = {'R1': R1.state_dict(), 'R2': R2.state_dict(), 'R3': R3.state_dict(), 'config': cfg}
+    save_dict = {'config': cfg}
+    for i in range(args.steps):
+        save_dict[f'Q{i+1}'] = q_nets[i].state_dict()
 
     os.makedirs("models", exist_ok=True)
     model_path = f"models/rims_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pth"

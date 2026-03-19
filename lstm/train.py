@@ -16,7 +16,7 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle
+from shared import load_pickle, FEATURE_COLS, N_ACTIONS, LSTM_DQN, build_vocab_and_stats, encode
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

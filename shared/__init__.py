@@ -29,3 +29,13 @@ from shared.evaluation import (
     print_results,
     print_action_dist
 )
+
+# LSTM utilities (shared by lstm and rims methods)
+from shared.lstm_utils import (
+    FEATURE_COLS,
+    N_ACTIONS,
+    LSTM_DQN,
+    build_vocab_and_stats,
+    encode,
+    encode_prefix,
+)
