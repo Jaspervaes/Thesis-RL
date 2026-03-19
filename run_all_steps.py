@@ -21,7 +21,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
 SEEDS = [42, 123, 456, 789, 1024]
-ALL_METHODS = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL']
+ALL_METHODS = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL', 'procause_lstm', 'procause_econml']
 ALL_STEPS   = [1, 2, 3]
 
 METHOD_SCRIPTS = {
@@ -55,6 +55,18 @@ METHOD_SCRIPTS = {
         'train':    'singleModelCQL/train.py',
         'evaluate': 'singleModelCQL/evaluate.py',
     },
+    'procause_lstm': {
+        'generate': 'procause/lstm_slearner/generate_data.py',
+        'convert':  'procause/lstm_slearner/convert_data.py',
+        'train':    'procause/lstm_slearner/train.py',
+        'evaluate': 'procause/lstm_slearner/evaluate.py',
+    },
+    'procause_econml': {
+        'generate': 'procause/econml_slearner/generate_data.py',
+        'convert':  'procause/econml_slearner/convert_data.py',
+        'train':    'procause/econml_slearner/train.py',
+        'evaluate': 'procause/econml_slearner/evaluate.py',
+    },
 }
 
 # File prefix used in data/ and models/ directories
@@ -64,6 +76,8 @@ FILE_PREFIX = {
     'rims':         'rims',
     'multiModelCQL':  'multi_cql',
     'singleModelCQL': 'single_cql',
+    'procause_lstm':    'procause_lstm',
+    'procause_econml':  'procause_econml',
 }
 
 # singleModelCQL generates _train.pkl/_val.pkl instead of _raw.pkl

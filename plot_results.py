@@ -27,14 +27,16 @@ from matplotlib.lines import Line2D
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # ── Style ─────────────────────────────────────────────────────────────────────
-METHODS   = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL']
+METHODS   = ['kmeans', 'lstm', 'multiModelCQL', 'singleModelCQL', 'procause_lstm', 'procause_econml']
 METHOD_LABELS = {
-    'kmeans': 'K-Means', 'lstm': 'LSTM-DQN', 'rims': 'RIMS',
+    'kmeans': 'K-Means', 'lstm': 'LSTM-DQN',
     'multiModelCQL': 'CQL-MM', 'singleModelCQL': 'CQL-SM',
+    'procause_lstm': 'ProCause-LSTM', 'procause_econml': 'ProCause-EconML',
 }
 COLORS    = {
-    'kmeans': '#2196F3', 'lstm': '#FF9800', 'rims': '#4CAF50',
+    'kmeans': '#2196F3', 'lstm': '#FF9800',
     'multiModelCQL': '#9C27B0', 'singleModelCQL': '#F44336',
+    'procause_lstm': '#4CAF50', 'procause_econml': '#009688',
 }
 STEP_LABELS = {1: '1-step\n(Int. 0)', 2: '2-step\n(Int. 0–1)', 3: '3-step\n(Int. 0–2)'}
 SUFFIX_STYLES = {'RCT': '-', 'CONF': '--'}
