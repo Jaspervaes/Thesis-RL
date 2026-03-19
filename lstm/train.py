@@ -20,6 +20,67 @@ from shared import load_pickle, FEATURE_COLS, N_ACTIONS, LSTM_DQN, build_vocab_a
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+FEATURE_COLS = ['amount', 'est_quality', 'unc_quality', 'interest_rate', 'cum_cost', 'elapsed_time']
+N_ACTIONS    = [2, 2, 3]
+
+
+class LSTM_DQN(nn.Module):
+    """LSTM encoder + Q-head for one intervention."""
+
+    def __init__(self, n_activities, n_features, n_actions, emb_dim=32, hidden=128, n_layers=2, dropout=0.2):
+        super().__init__()
+        self.emb  = nn.Embedding(n_activities, emb_dim, padding_idx=0)
+        self.lstm = nn.LSTM(emb_dim + n_features, hidden, n_layers,
+                            batch_first=True, dropout=dropout if n_layers > 1 else 0)
+        self.fc   = nn.Sequential(
+            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(hidden, n_actions),
+        )
+
+    def forward(self, acts, feats, lens):
+        x = torch.cat([self.emb(acts), feats], dim=-1)
+        packed = nn.utils.rnn.pack_padded_sequence(x, lens.cpu(), batch_first=True, enforce_sorted=False)
+        _, (h, _) = self.lstm(packed)
+        return self.fc(h[-1])
+
+
+def build_vocab_and_stats(df):
+    """Build activity vocab and feature normalization from all prefixes."""
+    all_events = []
+    for prefixes in [df['prefix'], df['next_prefix']]:
+        for p in prefixes:
+            all_events.extend(p)
+
+    activities = list({e.get('activity', '') for e in all_events})
+    activity_to_idx = {a: i + 1 for i, a in enumerate(activities)}
+    activity_to_idx[''] = 0
+
+    def _vals(c):
+        return [float(v) for e in all_events if not np.isnan(v := float(e.get(c, 0) or 0))]
+    feat_means = {c: (np.mean(_vals(c)) if _vals(c) else 0.0) for c in FEATURE_COLS}
+    feat_stds  = {c: max(np.std(_vals(c))  if _vals(c) else 0.0, 1e-8) for c in FEATURE_COLS}
+
+    return activity_to_idx, feat_means, feat_stds
+
+
+def encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len):
+    """Encode a list of prefix sequences to padded tensors."""
+    n = len(prefixes)
+    acts = np.zeros((n, max_len), dtype=np.int64)
+    feats = np.zeros((n, max_len, len(FEATURE_COLS)), dtype=np.float32)
+    lens = np.ones(n, dtype=np.int64)
+
+    for i, p in enumerate(prefixes):
+        seq_len = min(len(p), max_len)
+        lens[i] = max(seq_len, 1)
+        for j, e in enumerate(p[:seq_len]):
+            acts[i, j] = activity_to_idx.get(e.get('activity', ''), 0)
+            for k, col in enumerate(FEATURE_COLS):
+                v = float(e.get(col, 0) or 0)
+                feats[i, j, k] = 0.0 if np.isnan(v) else (v - feat_means[col]) / feat_stds[col]
+
+    return acts, feats, lens
+
 
 class SeqDataset(Dataset):
     def __init__(self, acts, feats, lens, n_acts, n_feats, n_lens, actions, rewards, terminals):
