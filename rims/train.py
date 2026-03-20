@@ -89,16 +89,20 @@ def encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len):
     return acts, feats, lens
 
 
-class RIMSDataset(Dataset):
-    def __init__(self, acts, feats, lens, n_acts, n_feats, n_lens,
-                 actions, rewards, terminals, proc_times, rem_times):
-        self.acts, self.feats, self.lens = acts, feats, lens
-        self.n_acts, self.n_feats, self.n_lens = n_acts, n_feats, n_lens
-        self.actions   = actions
-        self.rewards   = rewards
-        self.terminals = terminals
-        self.proc_times = proc_times
-        self.rem_times  = rem_times
+class ReplayBuffer:
+    """Simple replay buffer storing prefix-based transitions."""
+
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, prefix, action, reward, next_prefix, done):
+        self.buffer.append((prefix, action, reward, next_prefix, done))
+
+    def sample(self, batch_size):
+        indices = np.random.choice(len(self.buffer), batch_size, replace=False)
+        batch = [self.buffer[i] for i in indices]
+        prefixes, actions, rewards, next_prefixes, dones = zip(*batch)
+        return list(prefixes), list(actions), list(rewards), list(next_prefixes), list(dones)
 
     def __len__(self):
         return len(self.buffer)

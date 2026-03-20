@@ -2,6 +2,7 @@
 import sys
 import os
 import argparse
+import numpy as np
 import torch
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11,11 +12,12 @@ os.chdir(project_root)
 
 from shared import (
     load_pickle, bank_policy, random_policy, evaluate_policy,
-    print_results, print_action_dist,
-    N_ACTIONS, LSTM_DQN, encode_prefix,
+    print_results, print_action_dist, LSTM_DQN, encode_prefix,
 )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+N_ACTIONS = [2, 2, 3]
 
 
 class RIMSPolicy:
@@ -30,7 +32,7 @@ class RIMSPolicy:
         pass
 
     def __call__(self, prev_event, int_idx, prefix=None):
-        if int_idx >= self.steps:
+        if int_idx >= self.steps or int_idx not in self.models:
             return bank_policy(prev_event, int_idx)
         acts, feats, lens = encode_prefix(prefix or [], self.cfg)
         with torch.no_grad():
@@ -64,10 +66,11 @@ def main():
         return m
 
     models = {}
-    models[0] = load_net('Q1', N_ACTIONS[0])
-    if args.steps >= 2:
+    if 'Q1' in ckpt:
+        models[0] = load_net('Q1', N_ACTIONS[0])
+    if args.steps >= 2 and 'Q2' in ckpt:
         models[1] = load_net('Q2', N_ACTIONS[1])
-    if args.steps >= 3:
+    if args.steps >= 3 and 'Q3' in ckpt:
         models[2] = load_net('Q3', N_ACTIONS[2])
 
     policy = RIMSPolicy(models, cfg, steps=args.steps)
