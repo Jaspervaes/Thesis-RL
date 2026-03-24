@@ -44,9 +44,9 @@ SUFFIX_MARKERS = {'RCT': 'o', 'CONF': 's'}
 
 plt.rcParams.update({
     'font.size': 11,
-    'axes.titlesize': 12,
+    'axes.titlesize': 13,
     'axes.labelsize': 11,
-    'legend.fontsize': 10,
+    'legend.fontsize': 9,
     'figure.dpi': 150,
     'axes.spines.top': False,
     'axes.spines.right': False,
@@ -151,28 +151,30 @@ def fig1_marginal_contribution(results, out_dir, suffixes):
 
 def fig2_absolute_performance(results, out_dir, suffixes):
     n_suf = len(suffixes)
-    fig, axes = plt.subplots(1, n_suf, figsize=(9 * n_suf, 5), sharey=True)
+    fig, axes = plt.subplots(1, n_suf, figsize=(7 * n_suf, 6), sharey=True)
     if n_suf == 1:
         axes = [axes]
+
+    available_methods = [m for m in METHODS if any(
+        get_agg(results, m, s, st) for s in suffixes for st in [1, 2, 3])]
+    n_methods = len(available_methods)
+    width = 0.8 / n_methods
 
     for ax, suffix in zip(axes, suffixes):
         steps_list = [1, 2, 3]
         n_steps = len(steps_list)
-        n_methods = len(METHODS)
-        width = 0.18
-        x = np.arange(n_steps)
+        x = np.arange(n_steps) * (n_methods * width + 0.6)
 
-        # Bank reference line (same across steps, use mean)
         bank_vals = []
         for steps in steps_list:
-            agg = get_agg(results, METHODS[0], suffix, steps)
+            agg = get_agg(results, available_methods[0], suffix, steps)
             if agg:
                 bank_vals.append(agg['Bank']['mean'])
         if bank_vals:
             ax.axhline(np.mean(bank_vals), color='black', lw=1.5, linestyle='--',
                        label='Bank policy', zorder=5)
 
-        for mi, method in enumerate(METHODS):
+        for mi, method in enumerate(available_methods):
             means, errs = [], []
             for steps in steps_list:
                 agg = get_agg(results, method, suffix, steps)
@@ -183,19 +185,19 @@ def fig2_absolute_performance(results, out_dir, suffixes):
                 errs.append(agg[policy_key]['std'])
 
             offset = (mi - n_methods / 2 + 0.5) * width
-            bars = ax.bar(x + offset, means, width, yerr=errs, capsize=4,
-                          color=COLORS[method], label=METHOD_LABELS[method],
-                          alpha=0.85, error_kw={'lw': 1.2})
+            ax.bar(x + offset, means, width * 0.9, yerr=errs, capsize=3,
+                   color=COLORS[method], label=METHOD_LABELS[method],
+                   alpha=0.85, error_kw={'lw': 1})
 
         ax.set_title(f'{suffix} Data')
         ax.set_xlabel('Steps')
         ax.set_xticks(x)
         ax.set_xticklabels(['1-step\n(Int. 0)', '2-step\n(Int. 0–1)', '3-step\n(All)'])
         ax.set_ylabel('Average Outcome' if suffix == suffixes[0] else '')
-        ax.legend(frameon=False, ncol=2)
+        ax.legend(frameon=False, ncol=2, loc='upper left', fontsize=8)
         ax.grid(axis='y', alpha=0.3)
 
-    fig.suptitle('Absolute Performance by Method and Step Count', fontsize=13, fontweight='bold')
+    fig.suptitle('Absolute Performance by Method and Step Count', fontsize=14, fontweight='bold')
     plt.tight_layout()
     path = os.path.join(out_dir, 'fig2_absolute_performance.pdf')
     plt.savefig(path, bbox_inches='tight')
@@ -213,11 +215,14 @@ def fig3_rct_vs_conf(results, out_dir):
         return
 
     n_methods = len(available)
-    fig, axes = plt.subplots(1, n_methods, figsize=(4 * n_methods, 5), sharey=True)
-    if n_methods == 1:
-        axes = [axes]
+    ncols = min(4, n_methods)
+    nrows = (n_methods + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4.5 * nrows), sharey=True)
+    axes = np.atleast_2d(axes)
+    flat_axes = axes.flatten()
 
-    for ax, method in zip(axes, available):
+    for idx, method in enumerate(available):
+        ax = flat_axes[idx]
         steps_list = [1, 2, 3]
         x = np.arange(len(steps_list))
         width = 0.32
@@ -230,24 +235,25 @@ def fig3_rct_vs_conf(results, out_dir):
                 errs.append(s if (s is not None and not np.isnan(s)) else 0)
 
             offset = (si - 0.5) * width
-            color = COLORS[method] if suffix == 'RCT' else COLORS[method]
             alpha = 0.9 if suffix == 'RCT' else 0.45
             hatch = '' if suffix == 'RCT' else '///'
             ax.bar(x + offset, gains, width, yerr=errs, capsize=4,
-                   color=color, alpha=alpha, hatch=hatch, label=suffix,
+                   color=COLORS[method], alpha=alpha, hatch=hatch, label=suffix,
                    error_kw={'lw': 1.2})
 
         ax.axhline(0, color='grey', lw=0.8, linestyle='--', alpha=0.6)
-        ax.set_title(METHOD_LABELS[method])
-        ax.set_xlabel('Steps')
+        ax.set_title(METHOD_LABELS[method], fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(['1-step', '2-step', '3-step'])
-        if method == available[0]:
+        if idx % ncols == 0:
             ax.set_ylabel('% Gain vs Bank Policy')
-        ax.legend(frameon=False)
+        ax.legend(frameon=False, fontsize=8)
         ax.grid(axis='y', alpha=0.3)
 
-    fig.suptitle('RCT vs. Confounded Data: % Gain over Bank Policy', fontsize=13, fontweight='bold')
+    for idx in range(n_methods, len(flat_axes)):
+        flat_axes[idx].set_visible(False)
+
+    fig.suptitle('RCT vs. Confounded Data: % Gain over Bank Policy', fontsize=14, fontweight='bold')
     plt.tight_layout()
     path = os.path.join(out_dir, 'fig3_rct_vs_conf.pdf')
     plt.savefig(path, bbox_inches='tight')
@@ -373,16 +379,28 @@ def fig5_gain_heatmap(results, out_dir, suffixes):
 def fig6_incremental_gain(results, out_dir, suffixes):
     """Bar chart showing marginal gain from adding each intervention."""
     n_suf = len(suffixes)
-    fig, axes = plt.subplots(1, n_suf, figsize=(6 * n_suf, 5), sharey=True)
+    fig, axes = plt.subplots(1, n_suf, figsize=(7 * n_suf, 6), sharey=True)
     if n_suf == 1:
         axes = [axes]
 
-    for ax, suffix in zip(axes, suffixes):
-        x = np.arange(2)  # Δ(2→1) and Δ(3→2)
-        width = 0.22
-        n_methods = len(METHODS)
+    available_methods = []
+    for method in METHODS:
+        for suffix in suffixes:
+            g1, _ = get_gain(get_agg(results, method, suffix, 1))
+            g2, _ = get_gain(get_agg(results, method, suffix, 2))
+            g3, _ = get_gain(get_agg(results, method, suffix, 3))
+            if all(v is not None for v in [g1, g2, g3]):
+                if method not in available_methods:
+                    available_methods.append(method)
+                break
 
-        for mi, method in enumerate(METHODS):
+    n_methods = len(available_methods)
+    width = 0.8 / n_methods
+
+    for ax, suffix in zip(axes, suffixes):
+        x = np.arange(2) * (n_methods * width + 0.6)
+
+        for mi, method in enumerate(available_methods):
             g1, _ = get_gain(get_agg(results, method, suffix, 1))
             g2, _ = get_gain(get_agg(results, method, suffix, 2))
             g3, _ = get_gain(get_agg(results, method, suffix, 3))
@@ -392,12 +410,8 @@ def fig6_incremental_gain(results, out_dir, suffixes):
 
             deltas = [g2 - g1, g3 - g2]
             offset = (mi - n_methods / 2 + 0.5) * width
-            bars = ax.bar(x + offset, deltas, width, color=COLORS[method],
-                          label=METHOD_LABELS[method], alpha=0.85)
-            # Label bars
-            for bar, val in zip(bars, deltas):
-                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                        f'{val:+.1f}%', ha='center', va='bottom', fontsize=8)
+            ax.bar(x + offset, deltas, width * 0.9, color=COLORS[method],
+                   label=METHOD_LABELS[method], alpha=0.85)
 
         ax.axhline(0, color='grey', lw=0.8, linestyle='--', alpha=0.6)
         ax.set_title(f'{suffix} Data')
@@ -405,10 +419,10 @@ def fig6_incremental_gain(results, out_dir, suffixes):
         ax.set_xticks(x)
         ax.set_xticklabels(['Adding Int. 1\n(1-step → 2-step)', 'Adding Int. 2\n(2-step → 3-step)'])
         ax.set_ylabel('Incremental % Gain vs Bank' if suffix == suffixes[0] else '')
-        ax.legend(frameon=False)
+        ax.legend(frameon=False, fontsize=8)
         ax.grid(axis='y', alpha=0.3)
 
-    fig.suptitle('Incremental Gain per Additional Controlled Intervention', fontsize=13, fontweight='bold')
+    fig.suptitle('Incremental Gain per Additional Controlled Intervention', fontsize=14, fontweight='bold')
     plt.tight_layout()
     path = os.path.join(out_dir, 'fig6_incremental_gain.pdf')
     plt.savefig(path, bbox_inches='tight')
