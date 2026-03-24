@@ -104,33 +104,19 @@ class CATEDataset(Dataset):
 
 
 def train_econml_slearner(states, actions, outcomes, n_actions):
-    """Train S-learner via GradientBoosting on normalized data, return CATE."""
-    # Normalize state features and outcomes for better GBR performance
+    """Train S-learner via GradientBoosting. Returns model, scaler, outcome stats."""
     state_scaler = StandardScaler()
     states_norm = state_scaler.fit_transform(states)
     outcome_mean, outcome_std = outcomes.mean(), outcomes.std() + 1e-8
     outcomes_norm = (outcomes - outcome_mean) / outcome_std
 
-    # S-learner: concatenate treatment (action) as feature, fit single model
     X_train = np.column_stack([states_norm, actions.reshape(-1, 1)])
     model = GradientBoostingRegressor(
         n_estimators=500, max_depth=5, learning_rate=0.05,
         subsample=0.8, random_state=42)
     model.fit(X_train, outcomes_norm)
 
-    # Compute CATE: pred(state, a) - pred(state, a=0) for each action
-    # CATE is in normalized outcome space; scale back for interpretability
-    n = len(states)
-    cate = np.zeros((n, n_actions), dtype=np.float32)
-    preds = []
-    for a in range(n_actions):
-        X_with_t = np.column_stack([states_norm, np.full(n, a)])
-        preds.append(model.predict(X_with_t))
-    baseline = preds[0]
-    for a in range(n_actions):
-        cate[:, a] = (preds[a] - baseline) * outcome_std  # back to original scale
-
-    return cate
+    return model, state_scaler, outcome_mean, outcome_std
 
 
 def train_q_on_cate(model, train_loader, val_loader, args):
@@ -267,28 +253,25 @@ def main():
         va_actions = np.array(sub_val['action'].tolist())
         va_outcomes = np.array(sub_val['case_outcome'].tolist(), dtype=np.float64)
 
-        tr_cate = train_econml_slearner(tr_states, tr_actions, tr_outcomes, n_act)
-        va_cate = train_econml_slearner(va_states, va_actions, va_outcomes, n_act)
+        gbr_model, state_scaler, outcome_mean, outcome_std = train_econml_slearner(
+            tr_states, tr_actions, tr_outcomes, n_act)
 
-        # Normalize CATE for Q-network training
-        cate_std = float(np.std(tr_cate)) + 1e-8
-        tr_cate_norm = tr_cate / cate_std
-        va_cate_norm = va_cate / cate_std
-        print(f"  CATE computed: train={tr_cate.shape}, val={va_cate.shape}")
-        print(f"  CATE stats: std={cate_std:.2f}, mean_per_action={np.mean(tr_cate, axis=0)}")
-        print(f"  CATE range: [{tr_cate.min():.1f}, {tr_cate.max():.1f}]")
+        # Validate: predict for each action on val set
+        va_states_norm = state_scaler.transform(va_states)
+        val_preds = []
+        for a in range(n_act):
+            X_val = np.column_stack([va_states_norm, np.full(len(va_states), a)])
+            val_preds.append(gbr_model.predict(X_val) * outcome_std + outcome_mean)
+        val_preds = np.stack(val_preds, axis=1)
+        print(f"  Val pred means per action: {np.mean(val_preds, axis=0)}")
 
-        # Phase 2: Train Q-network on normalized CATE targets
-        print(f"\n[Q{int_idx+1} — CATE]")
-        tr_q_ds = CATEDataset(tr_acts, tr_feats, tr_lens, tr_cate_norm)
-        va_q_ds = CATEDataset(va_acts, va_feats, va_lens, va_cate_norm)
-        tr_q_loader = DataLoader(tr_q_ds, batch_size=args.batch_size, shuffle=True)
-        va_q_loader = DataLoader(va_q_ds, batch_size=args.batch_size, shuffle=False)
-
-        q_model = LSTM_DQN(n_activities, len(FEATURE_COLS), n_act,
-                           args.emb_dim, args.hidden, args.n_layers, args.dropout).to(device)
-        best_state = train_q_on_cate(q_model, tr_q_loader, va_q_loader, args)
-        save_dict[f'Q{int_idx+1}'] = best_state
+        # Save GBR S-learner artifacts
+        import pickle
+        save_dict[f'gbr_{int_idx}'] = pickle.dumps(gbr_model)
+        save_dict[f'scaler_{int_idx}'] = pickle.dumps(state_scaler)
+        save_dict[f'outcome_mean_{int_idx}'] = outcome_mean
+        save_dict[f'outcome_std_{int_idx}'] = outcome_std
+        save_dict[f'n_actions_{int_idx}'] = n_act
 
     os.makedirs("models", exist_ok=True)
     model_path = f"models/procause_econml_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pth"

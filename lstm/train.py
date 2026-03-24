@@ -1,10 +1,11 @@
 """Train LSTM-DQN offline RL: Q3 → Q2 → Q1 with backward TD."""
+import random
 import sys
 import os
 import argparse
 import copy
 import numpy as np
-import pandas as pd
+# import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -27,10 +28,17 @@ N_ACTIONS    = [2, 2, 3]
 class LSTM_DQN(nn.Module):
     """LSTM encoder + Q-head for one intervention."""
 
-    def __init__(self, n_activities, n_features, n_actions, emb_dim=32, hidden=128, n_layers=2, dropout=0.2):
+    def __init__(self, n_activities, n_features, n_actions, emb_dim=32, hidden=128, n_layers=2, dropout=0.2,
+                 activity_enc='integer'):
         super().__init__()
-        self.emb  = nn.Embedding(n_activities, emb_dim, padding_idx=0)
-        self.lstm = nn.LSTM(emb_dim + n_features, hidden, n_layers,
+        self.activity_enc = activity_enc
+        if self.activity_enc == 'integer':
+            self.emb  = nn.Embedding(n_activities, emb_dim, padding_idx=0)
+            lstm_in_dim = emb_dim + n_features
+        else:
+            self.emb = None
+            lstm_in_dim = n_activities + n_features
+        self.lstm = nn.LSTM(lstm_in_dim, hidden, n_layers,
                             batch_first=True, dropout=dropout if n_layers > 1 else 0)
         self.fc   = nn.Sequential(
             nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
@@ -38,7 +46,11 @@ class LSTM_DQN(nn.Module):
         )
 
     def forward(self, acts, feats, lens):
-        x = torch.cat([self.emb(acts), feats], dim=-1)
+        if self.activity_enc == 'integer':
+            act_repr = self.emb(acts)
+        else:
+            act_repr = acts
+        x = torch.cat([act_repr, feats], dim=-1)
         packed = nn.utils.rnn.pack_padded_sequence(x, lens.cpu(), batch_first=True, enforce_sorted=False)
         _, (h, _) = self.lstm(packed)
         return self.fc(h[-1])
@@ -51,7 +63,8 @@ def build_vocab_and_stats(df):
         for p in prefixes:
             all_events.extend(p)
 
-    activities = list({e.get('activity', '') for e in all_events})
+    # Use sorted unique activities to avoid run-to-run hash-order variation.
+    activities = sorted({e.get('activity', '') for e in all_events})
     activity_to_idx = {a: i + 1 for i, a in enumerate(activities)}
     activity_to_idx[''] = 0
 
@@ -63,10 +76,15 @@ def build_vocab_and_stats(df):
     return activity_to_idx, feat_means, feat_stds
 
 
-def encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len):
+def encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len, activity_enc='integer', n_activities=None):
     """Encode a list of prefix sequences to padded tensors."""
     n = len(prefixes)
-    acts = np.zeros((n, max_len), dtype=np.int64)
+    if n_activities is None:
+        n_activities = max(activity_to_idx.values(), default=0) + 1
+    if activity_enc == 'onehot':
+        acts = np.zeros((n, max_len, n_activities), dtype=np.float32)
+    else:
+        acts = np.zeros((n, max_len), dtype=np.int64)
     feats = np.zeros((n, max_len, len(FEATURE_COLS)), dtype=np.float32)
     lens = np.ones(n, dtype=np.int64)
 
@@ -74,7 +92,11 @@ def encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len):
         seq_len = min(len(p), max_len)
         lens[i] = max(seq_len, 1)
         for j, e in enumerate(p[:seq_len]):
-            acts[i, j] = activity_to_idx.get(e.get('activity', ''), 0)
+            a_idx = activity_to_idx.get(e.get('activity', ''), 0)
+            if activity_enc == 'onehot':
+                acts[i, j, a_idx] = 1.0
+            else:
+                acts[i, j] = a_idx
             for k, col in enumerate(FEATURE_COLS):
                 v = float(e.get(col, 0) or 0)
                 feats[i, j, k] = 0.0 if np.isnan(v) else (v - feat_means[col]) / feat_stds[col]
@@ -83,42 +105,60 @@ def encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len):
 
 
 class SeqDataset(Dataset):
-    def __init__(self, acts, feats, lens, n_acts, n_feats, n_lens, actions, rewards, terminals):
+    def __init__(self, acts, feats, lens, n_acts, n_feats, n_lens, actions, rewards, terminals, next_interventions,
+                 activity_enc='integer'):
         self.acts, self.feats, self.lens = acts, feats, lens
         self.n_acts, self.n_feats, self.n_lens = n_acts, n_feats, n_lens
         self.actions, self.rewards, self.terminals = actions, rewards, terminals
+        self.next_interventions = next_interventions
+        self.activity_enc = activity_enc
 
     def __len__(self):
         return len(self.actions)
 
     def __getitem__(self, i):
+        act_tensor = torch.FloatTensor(self.acts[i]) if self.activity_enc == 'onehot' else torch.LongTensor(self.acts[i])
+        n_act_tensor = torch.FloatTensor(self.n_acts[i]) if self.activity_enc == 'onehot' else torch.LongTensor(self.n_acts[i])
         return {
-            'acts': torch.LongTensor(self.acts[i]),
+            'acts': act_tensor,
             'feats': torch.FloatTensor(self.feats[i]),
             'lens': torch.LongTensor([self.lens[i]]),
-            'n_acts': torch.LongTensor(self.n_acts[i]),
+            'n_acts': n_act_tensor,
             'n_feats': torch.FloatTensor(self.n_feats[i]),
             'n_lens': torch.LongTensor([self.n_lens[i]]),
             'action': torch.LongTensor([self.actions[i]]),
             'reward': torch.FloatTensor([self.rewards[i]]),
             'terminal': torch.FloatTensor([self.terminals[i]]),
+            'next_intervention': torch.LongTensor([self.next_interventions[i]]),
         }
 
 
-def make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, batch_size, shuffle=True):
+def make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, batch_size, shuffle=True, seed=42,
+                activity_enc='integer', n_activities=None):
     """DataLoader for one intervention subset, or None if empty."""
     sub = df[df['intervention'] == int_idx]
     if sub.empty:
         return None
 
-    acts, feats, lens = encode(sub['prefix'].tolist(), activity_to_idx, feat_means, feat_stds, max_len)
-    n_acts, n_feats, n_lens = encode(sub['next_prefix'].tolist(), activity_to_idx, feat_means, feat_stds, max_len)
+    acts, feats, lens = encode(sub['prefix'].tolist(), activity_to_idx, feat_means, feat_stds, max_len,
+                               activity_enc=activity_enc, n_activities=n_activities)
+    n_acts, n_feats, n_lens = encode(sub['next_prefix'].tolist(), activity_to_idx, feat_means, feat_stds, max_len,
+                                     activity_enc=activity_enc, n_activities=n_activities)
 
     ds = SeqDataset(acts, feats, lens, n_acts, n_feats, n_lens,
                     sub['action'].tolist(), sub['reward'].tolist(),
-                    [float(t) for t in sub['terminal'].tolist()])
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+                    [float(t) for t in sub['terminal'].tolist()],
+                    [int(ni) for ni in sub['next_intervention'].tolist()],
+                    activity_enc=activity_enc)
+    g = torch.Generator()
+    g.manual_seed(seed)
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, worker_init_fn=seed_worker, generator=g)
 
+def seed_worker(worker_id):
+    """Ensure reproducibility in DataLoader workers."""
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 def train_q(model, target, opt, tr, va, target_fn, args):
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=5)
@@ -186,24 +226,31 @@ def main():
     parser.add_argument('--patience',   type=int,   default=10)
     parser.add_argument('--es_delta',   type=float, default=1e-4)
     parser.add_argument('--steps',      type=int,   default=3, choices=[1, 2, 3])
+    parser.add_argument('--target_calc', default='normal', choices=['normal', 'torch.max'])
+    parser.add_argument('--activity_enc', default='integer', choices=['onehot', 'integer'])
     args = parser.parse_args()
 
     np.random.seed(args.seed)
+    random.seed(args.seed)
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
 
     suffix = "CONF" if args.confounded else "RCT"
     base   = f"data/lstm_{suffix}_{args.n_cases}"
+    suffix_res = suffix + f'_target_{args.target_calc}' + f'_actenc_{args.activity_enc}'
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
-    print(f"Training LSTM-DQN — {suffix} | lr={args.lr} epochs={args.epochs} steps={args.steps}")
+    print(f"Training LSTM-DQN — {suffix_res} | lr={args.lr} epochs={args.epochs} steps={args.steps}")
 
     df_train = load_pickle(f"{base}_trans_train{step_tag}.pkl")
     df_val   = load_pickle(f"{base}_trans_val{step_tag}.pkl")
     print(f"Train: {len(df_train)}, Val: {len(df_val)} transitions")
 
     activity_to_idx, feat_means, feat_stds = build_vocab_and_stats(df_train)
-    n_activities = len(activity_to_idx)
+    n_activities = max(activity_to_idx.values(), default=0) + 1
 
     all_prefixes = list(df_train['prefix']) + list(df_train['next_prefix'])
     max_len = max((len(p) for p in all_prefixes), default=1)
@@ -216,13 +263,17 @@ def main():
     bs = args.batch_size
 
     def make_model(n_act):
-        m  = LSTM_DQN(n_activities, len(FEATURE_COLS), n_act, args.emb_dim, args.hidden, args.n_layers, args.dropout).to(device)
-        mt = LSTM_DQN(n_activities, len(FEATURE_COLS), n_act, args.emb_dim, args.hidden, args.n_layers, args.dropout).to(device)
+        m  = LSTM_DQN(n_activities, len(FEATURE_COLS), n_act, args.emb_dim, args.hidden, args.n_layers, args.dropout,
+                      activity_enc=args.activity_enc).to(device)
+        mt = LSTM_DQN(n_activities, len(FEATURE_COLS), n_act, args.emb_dim, args.hidden, args.n_layers, args.dropout,
+                      activity_enc=args.activity_enc).to(device)
         mt.load_state_dict(m.state_dict())
         return m, mt
 
     def loader(df, int_idx, shuffle=True):
-        return make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, bs, shuffle)
+        # Keep each intervention's sampling order reproducible across runs.
+        return make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, bs, shuffle,
+                           seed=args.seed + int_idx, activity_enc=args.activity_enc, n_activities=n_activities)
 
     cfg = {
         'n_activities': n_activities,
@@ -238,6 +289,7 @@ def main():
         'dropout':      args.dropout,
         'n_actions':    N_ACTIONS,
         'steps':        args.steps,
+        'activity_enc': args.activity_enc,
     }
 
     if args.steps == 1:
@@ -289,20 +341,44 @@ def main():
             with torch.no_grad():
                 nq = Q3t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
             return term * norm(r) + (1 - term) * args.gamma * nq.max(1)[0]
+        # put Q3t in eval mode to disable dropout during target calculation, but keep Q3 trainable for its own optimization
+        Q3t.eval()
         best2 = train_q(Q2, Q2t, optim.Adam(Q2.parameters(), args.lr, weight_decay=1e-5), tr1, va1, tgt2, args)
         Q2.load_state_dict(best2); Q2t.load_state_dict(best2)
 
         print("\n[Q1]")
         def tgt1(b):
-            r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
-            t = term * norm(r)
-            with torch.no_grad():
-                nq2 = Q2t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-                nq3 = Q3t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
-            m1 = (1 - term).bool()
-            if m1.any():
-                t[m1] = args.gamma * torch.max(nq2[m1].max(1)[0], nq3[m1].max(1)[0])
-            return t
+            if args.target_calc == 'normal':
+                r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
+                ni = b['next_intervention'].squeeze(1).to(device)
+                t = term * norm(r)
+                with torch.no_grad():
+                    nq2 = Q2t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
+                    nq3 = Q3t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
+                m2 = ((1 - term).bool()) & (ni == 1)
+                m3 = ((1 - term).bool()) & (ni == 2)
+                if m2.any():
+                    t[m2] = args.gamma * nq2[m2].max(1)[0]
+                if m3.any():
+                    t[m3] = args.gamma * nq3[m3].max(1)[0]
+                # Fallback for unexpected labels keeps behavior defined.
+                m_other = ((1 - term).bool()) & (~(m2 | m3))
+                if m_other.any():
+                    t[m_other] = args.gamma * torch.max(nq2[m_other].max(1)[0], nq3[m_other].max(1)[0])
+                return t
+            else: # args.target_calc == 'torch.max'
+                r, term = b['reward'].squeeze(1).to(device), b['terminal'].squeeze(1).to(device)
+                t = term * norm(r)
+                with torch.no_grad():
+                    nq2 = Q2t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
+                    nq3 = Q3t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
+                m1 = (1 - term).bool()
+                if m1.any():
+                    t[m1] = args.gamma * torch.max(nq2[m1].max(1)[0], nq3[m1].max(1)[0])
+                return t
+        # put Q2t and Q3t in eval mode to disable dropout during target calculation, but keep Q2 and Q3 trainable for their own optimization$
+        Q2t.eval()
+        Q3t.eval()
         best1 = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr, weight_decay=1e-5), tr0, va0, tgt1, args)
         Q1.load_state_dict(best1)
         save_dict = {'Q1': Q1.state_dict(), 'Q2': Q2.state_dict(), 'Q3': Q3.state_dict(), 'config': cfg}

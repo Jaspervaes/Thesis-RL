@@ -15,6 +15,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--n_cases',    type=int,   default=10000)
     parser.add_argument('--confounded', action='store_true')
+    # parser.add_argument('--confounded', action='store_true', default=True)  # Default to confounded data for more realistic training
     parser.add_argument('--delta',      type=float, default=0.95)
     parser.add_argument('--seed',       type=int,   default=42)
     args = parser.parse_args()

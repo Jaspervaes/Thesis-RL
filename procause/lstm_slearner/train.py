@@ -322,6 +322,7 @@ def main():
         'dropout':      args.dropout,
         'n_actions':    N_ACTIONS,
         'steps':        args.steps,
+        'action_emb_dim': args.action_emb_dim,
     }
 
     save_dict = {'config': cfg}
@@ -371,27 +372,9 @@ def main():
 
         slearner = train_slearner(slearner, tr_sl_loader, va_sl_loader, args)
 
-        # Phase 2: Compute CATE and train Q-network
-        # CATE is in normalized space but that's fine — only ranking matters for argmax
-        tr_cate = compute_cate(slearner, tr_acts, tr_feats, tr_lens, n_act)
-        va_cate = compute_cate(slearner, va_acts, va_feats, va_lens, n_act)
-
-        # Normalize CATE targets for Q-network training stability
-        cate_std = float(np.std(tr_cate)) + 1e-8
-        tr_cate_norm = tr_cate / cate_std
-        va_cate_norm = va_cate / cate_std
-        print(f"\n[Q{int_idx+1} — CATE] cate_std={cate_std:.4f}, "
-              f"mean_cate={np.mean(tr_cate, axis=0)}, range=[{tr_cate.min():.2f}, {tr_cate.max():.2f}]")
-
-        tr_q_ds = CATEDataset(tr_acts, tr_feats, tr_lens, tr_cate_norm)
-        va_q_ds = CATEDataset(va_acts, va_feats, va_lens, va_cate_norm)
-        tr_q_loader = DataLoader(tr_q_ds, batch_size=args.batch_size, shuffle=True)
-        va_q_loader = DataLoader(va_q_ds, batch_size=args.batch_size, shuffle=False)
-
-        q_model = LSTM_DQN(n_activities, len(FEATURE_COLS), n_act,
-                           args.emb_dim, args.hidden, args.n_layers, args.dropout).to(device)
-        best_state = train_q_on_cate(q_model, tr_q_loader, va_q_loader, args)
-        save_dict[f'Q{int_idx+1}'] = best_state
+        # Save S-learner (used directly at eval time for action selection)
+        save_dict[f'S{int_idx+1}'] = slearner.state_dict()
+        save_dict[f'n_actions_{int_idx}'] = n_act
 
     os.makedirs("models", exist_ok=True)
     model_path = f"models/procause_lstm_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pth"

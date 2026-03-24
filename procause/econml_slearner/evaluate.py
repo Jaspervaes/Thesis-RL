@@ -1,10 +1,10 @@
-"""Evaluate ProCause EconML S-learner offline RL against bank and random baselines."""
+"""Evaluate ProCause EconML S-learner against bank and random baselines."""
 import sys
 import os
 import argparse
+import pickle
 import numpy as np
 import torch
-import torch.nn as nn
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(script_dir))
@@ -13,70 +13,56 @@ os.chdir(project_root)
 
 from shared import (
     load_pickle, bank_policy, random_policy, evaluate_policy,
-    print_results, print_action_dist,
+    print_results, print_action_dist, extract_state,
 )
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from shared.experiment_config import TRACKED_ACTIVITIES
 
 N_ACTIONS = [2, 2, 3]
 
 
-class LSTM_DQN(nn.Module):
-    def __init__(self, n_activities, n_features, n_actions, emb_dim, hidden, n_layers, dropout):
-        super().__init__()
-        self.emb  = nn.Embedding(n_activities, emb_dim, padding_idx=0)
-        self.lstm = nn.LSTM(emb_dim + n_features, hidden, n_layers,
-                            batch_first=True, dropout=dropout if n_layers > 1 else 0)
-        self.fc   = nn.Sequential(
-            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, n_actions),
-        )
-
-    def forward(self, acts, feats, lens):
-        x = torch.cat([self.emb(acts), feats], dim=-1)
-        packed = nn.utils.rnn.pack_padded_sequence(x, lens.cpu(), batch_first=True, enforce_sorted=False)
-        _, (h, _) = self.lstm(packed)
-        return self.fc(h[-1])
-
-
-def encode_prefix(prefix, cfg):
-    """Encode a single prefix into padded tensors (batch size 1)."""
-    max_len = cfg['max_len']
-    a2i     = cfg['activity_to_idx']
-    means   = cfg['feat_means']
-    stds    = cfg['feat_stds']
-    cols    = cfg['feature_cols']
-
-    acts  = np.zeros((1, max_len), dtype=np.int64)
-    feats = np.zeros((1, max_len, len(cols)), dtype=np.float32)
-    seq_len = max(min(len(prefix), max_len), 1)
-
-    for j, e in enumerate(prefix[:seq_len]):
-        acts[0, j] = a2i.get(e.get('activity', ''), 0)
-        for k, col in enumerate(cols):
-            feats[0, j, k] = (float(e.get(col, 0)) - means[col]) / stds[col]
-
-    return torch.LongTensor(acts).to(device), torch.FloatTensor(feats).to(device), torch.LongTensor([seq_len])
+def count_activities_from_list(events, up_to_idx):
+    """Count activity occurrences from a list of event dicts."""
+    counts = {act: 0 for act in TRACKED_ACTIVITIES}
+    for i in range(min(up_to_idx, len(events))):
+        activity = events[i].get('activity', '').lower()
+        for tracked in TRACKED_ACTIVITIES:
+            if tracked in activity:
+                counts[tracked] += 1
+    return counts
 
 
 class ProCauseEconMLPolicy:
-    """ProCause EconML policy with separate Q-networks per trained intervention."""
+    """ProCause policy: use GBR S-learner directly to pick best action per case."""
 
-    def __init__(self, models, cfg, steps=3):
-        self.models = models
-        self.cfg    = cfg
-        self.steps  = steps
+    def __init__(self, gbr_models, cfg, steps=3):
+        self.gbr_models = gbr_models  # {int_idx: (model, scaler, n_actions)}
+        self.cfg = cfg
+        self.steps = steps
 
     def reset(self):
         pass
 
     def __call__(self, prev_event, int_idx, prefix=None):
-        if int_idx >= self.steps or int_idx not in self.models:
+        if int_idx >= self.steps or int_idx not in self.gbr_models:
             return bank_policy(prev_event, int_idx)
-        acts, feats, lens = encode_prefix(prefix or [], self.cfg)
-        with torch.no_grad():
-            q = self.models[int_idx](acts, feats, lens)
-        return q[0, :N_ACTIONS[int_idx]].argmax().item()
+
+        model, scaler, n_act = self.gbr_models[int_idx]
+
+        # Extract state from prefix (same as convert_data)
+        if prefix and len(prefix) > 0:
+            activity_counts = count_activities_from_list(prefix, len(prefix) - 1)
+            state = extract_state(prev_event, activity_counts)
+        else:
+            state = np.zeros(16)
+
+        state_norm = scaler.transform(state.reshape(1, -1))
+
+        # Predict outcome for each action, pick best
+        preds = []
+        for a in range(n_act):
+            X = np.column_stack([state_norm, np.array([[a]])])
+            preds.append(model.predict(X)[0])
+        return int(np.argmax(preds))
 
 
 def main():
@@ -93,26 +79,20 @@ def main():
     suffix = "CONF" if args.confounded else "RCT"
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
     ckpt   = torch.load(f"models/procause_econml_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth",
-                        map_location=device, weights_only=False)
+                        map_location='cpu', weights_only=False)
     cfg    = ckpt['config']
     params = load_pickle(f"data/procause_econml_{suffix}_{args.n_cases}_params.pkl")
 
-    def load_net(key, n_act):
-        m = LSTM_DQN(cfg['n_activities'], cfg['n_features'], n_act,
-                     cfg['emb_dim'], cfg['hidden'], cfg['n_layers'], cfg['dropout']).to(device)
-        m.load_state_dict(ckpt[key])
-        m.eval()
-        return m
+    gbr_models = {}
+    for int_idx in range(args.steps):
+        key = f'gbr_{int_idx}'
+        if key in ckpt:
+            model = pickle.loads(ckpt[key])
+            scaler = pickle.loads(ckpt[f'scaler_{int_idx}'])
+            n_act = ckpt[f'n_actions_{int_idx}']
+            gbr_models[int_idx] = (model, scaler, n_act)
 
-    models = {}
-    if 'Q1' in ckpt:
-        models[0] = load_net('Q1', N_ACTIONS[0])
-    if args.steps >= 2 and 'Q2' in ckpt:
-        models[1] = load_net('Q2', N_ACTIONS[1])
-    if args.steps >= 3 and 'Q3' in ckpt:
-        models[2] = load_net('Q3', N_ACTIONS[2])
-
-    policy = ProCauseEconMLPolicy(models, cfg, steps=args.steps)
+    policy = ProCauseEconMLPolicy(gbr_models, cfg, steps=args.steps)
     label  = f'ProCause-EconML {suffix} ({args.steps}-step)'
 
     print(f"Evaluating ProCause EconML — {suffix} | steps={args.steps}")

@@ -1,4 +1,4 @@
-"""Evaluate ProCause LSTM S-learner offline RL against bank and random baselines."""
+"""Evaluate ProCause LSTM S-learner against bank and random baselines."""
 import sys
 import os
 import argparse
@@ -21,22 +21,29 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 N_ACTIONS = [2, 2, 3]
 
 
-class LSTM_DQN(nn.Module):
-    def __init__(self, n_activities, n_features, n_actions, emb_dim, hidden, n_layers, dropout):
+class LSTM_SLearner(nn.Module):
+    """LSTM encoder with action embedding for outcome prediction."""
+
+    def __init__(self, n_activities, n_features, n_actions, emb_dim=32, action_emb_dim=16,
+                 hidden=128, n_layers=2, dropout=0.2):
         super().__init__()
+        self.n_actions = n_actions
         self.emb  = nn.Embedding(n_activities, emb_dim, padding_idx=0)
         self.lstm = nn.LSTM(emb_dim + n_features, hidden, n_layers,
                             batch_first=True, dropout=dropout if n_layers > 1 else 0)
-        self.fc   = nn.Sequential(
-            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, n_actions),
+        self.action_emb = nn.Embedding(n_actions, action_emb_dim)
+        self.head = nn.Sequential(
+            nn.Linear(hidden + action_emb_dim, hidden), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(hidden, 1),
         )
 
-    def forward(self, acts, feats, lens):
+    def forward(self, acts, feats, lens, actions):
         x = torch.cat([self.emb(acts), feats], dim=-1)
         packed = nn.utils.rnn.pack_padded_sequence(x, lens.cpu(), batch_first=True, enforce_sorted=False)
         _, (h, _) = self.lstm(packed)
-        return self.fc(h[-1])
+        h_last = h[-1]
+        a_emb = self.action_emb(actions)
+        return self.head(torch.cat([h_last, a_emb], dim=-1)).squeeze(-1)
 
 
 def encode_prefix(prefix, cfg):
@@ -54,29 +61,42 @@ def encode_prefix(prefix, cfg):
     for j, e in enumerate(prefix[:seq_len]):
         acts[0, j] = a2i.get(e.get('activity', ''), 0)
         for k, col in enumerate(cols):
-            feats[0, j, k] = (float(e.get(col, 0)) - means[col]) / stds[col]
+            val = e.get(col, 0)
+            try:
+                val = float(val)
+            except (TypeError, ValueError):
+                val = 0.0
+            if not np.isfinite(val):
+                val = 0.0
+            feats[0, j, k] = (val - means[col]) / stds[col]
 
     return torch.LongTensor(acts).to(device), torch.FloatTensor(feats).to(device), torch.LongTensor([seq_len])
 
 
 class ProCauseLSTMPolicy:
-    """ProCause LSTM policy with separate Q-networks per trained intervention."""
+    """ProCause policy: use S-learner directly to pick best action per case."""
 
-    def __init__(self, models, cfg, steps=3):
-        self.models = models
-        self.cfg    = cfg
-        self.steps  = steps
+    def __init__(self, slearners, cfg, steps=3):
+        self.slearners = slearners
+        self.cfg = cfg
+        self.steps = steps
 
     def reset(self):
         pass
 
     def __call__(self, prev_event, int_idx, prefix=None):
-        if int_idx >= self.steps or int_idx not in self.models:
+        if int_idx >= self.steps or int_idx not in self.slearners:
             return bank_policy(prev_event, int_idx)
         acts, feats, lens = encode_prefix(prefix or [], self.cfg)
+        slearner = self.slearners[int_idx]
+        n_act = slearner.n_actions
         with torch.no_grad():
-            q = self.models[int_idx](acts, feats, lens)
-        return q[0, :N_ACTIONS[int_idx]].argmax().item()
+            preds = []
+            for a in range(n_act):
+                action_t = torch.LongTensor([a]).to(device)
+                pred = slearner(acts, feats, lens, action_t).item()
+                preds.append(pred)
+        return int(np.argmax(preds))
 
 
 def main():
@@ -97,22 +117,25 @@ def main():
     cfg    = ckpt['config']
     params = load_pickle(f"data/procause_lstm_{suffix}_{args.n_cases}_params.pkl")
 
-    def load_net(key, n_act):
-        m = LSTM_DQN(cfg['n_activities'], cfg['n_features'], n_act,
-                     cfg['emb_dim'], cfg['hidden'], cfg['n_layers'], cfg['dropout']).to(device)
+    action_emb_dim = cfg.get('action_emb_dim', 16)
+
+    def load_slearner(key, n_act):
+        m = LSTM_SLearner(cfg['n_activities'], cfg['n_features'], n_act,
+                          cfg['emb_dim'], action_emb_dim, cfg['hidden'],
+                          cfg['n_layers'], cfg['dropout']).to(device)
         m.load_state_dict(ckpt[key])
         m.eval()
         return m
 
-    models = {}
-    if 'Q1' in ckpt:
-        models[0] = load_net('Q1', N_ACTIONS[0])
-    if args.steps >= 2 and 'Q2' in ckpt:
-        models[1] = load_net('Q2', N_ACTIONS[1])
-    if args.steps >= 3 and 'Q3' in ckpt:
-        models[2] = load_net('Q3', N_ACTIONS[2])
+    slearners = {}
+    if 'S1' in ckpt:
+        slearners[0] = load_slearner('S1', N_ACTIONS[0])
+    if args.steps >= 2 and 'S2' in ckpt:
+        slearners[1] = load_slearner('S2', N_ACTIONS[1])
+    if args.steps >= 3 and 'S3' in ckpt:
+        slearners[2] = load_slearner('S3', N_ACTIONS[2])
 
-    policy = ProCauseLSTMPolicy(models, cfg, steps=args.steps)
+    policy = ProCauseLSTMPolicy(slearners, cfg, steps=args.steps)
     label  = f'ProCause-LSTM {suffix} ({args.steps}-step)'
 
     print(f"Evaluating ProCause LSTM — {suffix} | steps={args.steps}")

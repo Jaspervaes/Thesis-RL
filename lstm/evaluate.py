@@ -12,8 +12,9 @@ os.chdir(project_root)
 from shared import (
     load_pickle, bank_policy, random_policy, evaluate_policy,
     print_results, print_action_dist,
-    N_ACTIONS, LSTM_DQN, encode_prefix,
+    N_ACTIONS, encode_prefix,
 )
+from lstm.train import LSTM_DQN
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -47,9 +48,12 @@ def main():
     parser.add_argument('--train_seed',   type=int, default=42)
     parser.add_argument('--steps',        type=int, default=3, choices=[1, 2, 3])
     parser.add_argument('--results_file', type=str, default=None)
+    parser.add_argument('--target_calc', default='normal', choices=['normal', 'torch.max'])
+    parser.add_argument('--activity_enc', default='integer', choices=['onehot', 'integer'])
     args = parser.parse_args()
 
     suffix = "CONF" if args.confounded else "RCT"
+    suffix_res = suffix + f'_target_{args.target_calc}' + f'_actenc_{args.activity_enc}'
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
     ckpt   = torch.load(f"models/lstm_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth",
                         map_location=device, weights_only=False)
@@ -58,7 +62,8 @@ def main():
 
     def load_net(key, n_act):
         m = LSTM_DQN(cfg['n_activities'], cfg['n_features'], n_act,
-                     cfg['emb_dim'], cfg['hidden'], cfg['n_layers'], cfg['dropout']).to(device)
+                     cfg['emb_dim'], cfg['hidden'], cfg['n_layers'], cfg['dropout'],
+                     activity_enc=cfg.get('activity_enc', 'integer')).to(device)
         m.load_state_dict(ckpt[key])
         m.eval()
         return m
