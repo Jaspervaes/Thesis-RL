@@ -5,7 +5,6 @@ import os
 import argparse
 import copy
 import numpy as np
-# import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -17,91 +16,12 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle, FEATURE_COLS, N_ACTIONS, LSTM_DQN, build_vocab_and_stats, encode, seed_worker
+from shared import (
+    load_pickle, FEATURE_COLS, N_ACTIONS, LSTM_DQN,
+    build_vocab_and_stats, encode, seed_worker,
+)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-FEATURE_COLS = ['amount', 'est_quality', 'unc_quality', 'interest_rate', 'cum_cost', 'elapsed_time']
-N_ACTIONS    = [2, 2, 3]
-
-
-class LSTM_DQN(nn.Module):
-    """LSTM encoder + Q-head for one intervention."""
-
-    def __init__(self, n_activities, n_features, n_actions, emb_dim=32, hidden=128, n_layers=2, dropout=0.2,
-                 activity_enc='integer'):
-        super().__init__()
-        self.activity_enc = activity_enc
-        if self.activity_enc == 'integer':
-            self.emb  = nn.Embedding(n_activities, emb_dim, padding_idx=0)
-            lstm_in_dim = emb_dim + n_features
-        else:
-            self.emb = None
-            lstm_in_dim = n_activities + n_features
-        self.lstm = nn.LSTM(lstm_in_dim, hidden, n_layers,
-                            batch_first=True, dropout=dropout if n_layers > 1 else 0)
-        self.fc   = nn.Sequential(
-            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, n_actions),
-        )
-
-    def forward(self, acts, feats, lens):
-        if self.activity_enc == 'integer':
-            act_repr = self.emb(acts)
-        else:
-            act_repr = acts
-        x = torch.cat([act_repr, feats], dim=-1)
-        packed = nn.utils.rnn.pack_padded_sequence(x, lens.cpu(), batch_first=True, enforce_sorted=False)
-        _, (h, _) = self.lstm(packed)
-        return self.fc(h[-1])
-
-
-def build_vocab_and_stats(df):
-    """Build activity vocab and feature normalization from all prefixes."""
-    all_events = []
-    for prefixes in [df['prefix'], df['next_prefix']]:
-        for p in prefixes:
-            all_events.extend(p)
-
-    # Use sorted unique activities to avoid run-to-run hash-order variation.
-    activities = sorted({e.get('activity', '') for e in all_events})
-    activity_to_idx = {a: i + 1 for i, a in enumerate(activities)}
-    activity_to_idx[''] = 0
-
-    def _vals(c):
-        return [float(v) for e in all_events if not np.isnan(v := float(e.get(c, 0) or 0))]
-    feat_means = {c: (np.mean(_vals(c)) if _vals(c) else 0.0) for c in FEATURE_COLS}
-    feat_stds  = {c: max(np.std(_vals(c))  if _vals(c) else 0.0, 1e-8) for c in FEATURE_COLS}
-
-    return activity_to_idx, feat_means, feat_stds
-
-
-def encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len, activity_enc='integer', n_activities=None):
-    """Encode a list of prefix sequences to padded tensors."""
-    n = len(prefixes)
-    if n_activities is None:
-        n_activities = max(activity_to_idx.values(), default=0) + 1
-    if activity_enc == 'onehot':
-        acts = np.zeros((n, max_len, n_activities), dtype=np.float32)
-    else:
-        acts = np.zeros((n, max_len), dtype=np.int64)
-    feats = np.zeros((n, max_len, len(FEATURE_COLS)), dtype=np.float32)
-    lens = np.ones(n, dtype=np.int64)
-
-    for i, p in enumerate(prefixes):
-        seq_len = min(len(p), max_len)
-        lens[i] = max(seq_len, 1)
-        for j, e in enumerate(p[:seq_len]):
-            a_idx = activity_to_idx.get(e.get('activity', ''), 0)
-            if activity_enc == 'onehot':
-                acts[i, j, a_idx] = 1.0
-            else:
-                acts[i, j] = a_idx
-            for k, col in enumerate(FEATURE_COLS):
-                v = float(e.get(col, 0) or 0)
-                feats[i, j, k] = 0.0 if np.isnan(v) else (v - feat_means[col]) / feat_stds[col]
-
-    return acts, feats, lens
 
 
 class SeqDataset(Dataset):
@@ -154,11 +74,6 @@ def make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, ba
     g.manual_seed(seed)
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, worker_init_fn=seed_worker, generator=g)
 
-def seed_worker(worker_id):
-    """Ensure reproducibility in DataLoader workers."""
-    worker_seed = torch.initial_seed() % 2**32
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
 
 def train_q(model, target, opt, tr, va, target_fn, args):
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=5)
@@ -340,7 +255,6 @@ def main():
             with torch.no_grad():
                 nq = Q3t(b['n_acts'].to(device), b['n_feats'].to(device), b['n_lens'].squeeze(1))
             return term * norm(r) + (1 - term) * args.gamma * nq.max(1)[0]
-        # put Q3t in eval mode to disable dropout during target calculation, but keep Q3 trainable for its own optimization
         Q3t.eval()
         best2 = train_q(Q2, Q2t, optim.Adam(Q2.parameters(), args.lr, weight_decay=1e-5), tr1, va1, tgt2, args)
         Q2.load_state_dict(best2); Q2t.load_state_dict(best2)
@@ -360,7 +274,6 @@ def main():
                     t[m2] = args.gamma * nq2[m2].max(1)[0]
                 if m3.any():
                     t[m3] = args.gamma * nq3[m3].max(1)[0]
-                # Fallback for unexpected labels keeps behavior defined.
                 m_other = ((1 - term).bool()) & (~(m2 | m3))
                 if m_other.any():
                     t[m_other] = args.gamma * torch.max(nq2[m_other].max(1)[0], nq3[m_other].max(1)[0])
@@ -375,7 +288,6 @@ def main():
                 if m1.any():
                     t[m1] = args.gamma * torch.max(nq2[m1].max(1)[0], nq3[m1].max(1)[0])
                 return t
-        # put Q2t and Q3t in eval mode to disable dropout during target calculation, but keep Q2 and Q3 trainable for their own optimization$
         Q2t.eval()
         Q3t.eval()
         best1 = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr, weight_decay=1e-5), tr0, va0, tgt1, args)
