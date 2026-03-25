@@ -16,7 +16,7 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle, STATE_DIM
+from shared import load_pickle, STATE_DIM, seed_worker
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -111,7 +111,10 @@ def main():
     target.load_state_dict(model.state_dict())
     opt = optim.Adam(model.parameters(), lr=args.lr)
 
-    train_loader = DataLoader(TransitionDataset(df_train), batch_size=args.batch_size, shuffle=True)
+    g = torch.Generator()
+    g.manual_seed(args.seed)
+    train_loader = DataLoader(TransitionDataset(df_train), batch_size=args.batch_size, shuffle=True,
+                              worker_init_fn=seed_worker, generator=g)
     val_loader   = DataLoader(TransitionDataset(df_val),   batch_size=args.batch_size)
 
     best_val, best_state, patience_count = float('inf'), copy.deepcopy(model.state_dict()), 0

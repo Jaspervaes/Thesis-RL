@@ -100,7 +100,6 @@ def prepare_sim_data(df, activity_to_idx):
         timestamps = group['timestamp'].tolist()
 
         for i in range(1, len(events)):
-            # prefix = events[:i]
             p_acts = [activity_to_idx.get(e.get('activity', ''), 0) for e in events[:i]]
             p_feats = [[_safe_float(e.get(c, 0)) for c in FEATURE_COLS] for e in events[:i]]
             next_act = activity_to_idx.get(events[i].get('activity', ''), 0)

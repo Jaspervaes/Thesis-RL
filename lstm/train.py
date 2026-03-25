@@ -16,7 +16,7 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle, FEATURE_COLS, N_ACTIONS, LSTM_DQN, build_vocab_and_stats, encode
+from shared import load_pickle, FEATURE_COLS, N_ACTIONS, LSTM_DQN, build_vocab_and_stats, encode, seed_worker
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -44,7 +44,7 @@ class SeqDataset(Dataset):
         }
 
 
-def make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, batch_size, shuffle=True):
+def make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, batch_size, shuffle=True, seed=0):
     """DataLoader for one intervention subset, or None if empty."""
     sub = df[df['intervention'] == int_idx]
     if sub.empty:
@@ -56,7 +56,10 @@ def make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, ba
     ds = SeqDataset(acts, feats, lens, n_acts, n_feats, n_lens,
                     sub['action'].tolist(), sub['reward'].tolist(),
                     [float(t) for t in sub['terminal'].tolist()])
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+    g = torch.Generator()
+    g.manual_seed(seed)
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                      worker_init_fn=seed_worker, generator=g)
 
 
 def train_q(model, target, opt, tr, va, target_fn, args):
@@ -161,7 +164,7 @@ def main():
         return m, mt
 
     def loader(df, int_idx, shuffle=True):
-        return make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, bs, shuffle)
+        return make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, bs, shuffle, seed=args.seed)
 
     cfg = {
         'n_activities': n_activities,

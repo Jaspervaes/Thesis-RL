@@ -5,6 +5,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+
+def seed_worker(worker_id):
+    """Ensure reproducible DataLoader workers by seeding from PyTorch's RNG."""
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 FEATURE_COLS = ['amount', 'est_quality', 'unc_quality', 'interest_rate', 'cum_cost', 'elapsed_time']
