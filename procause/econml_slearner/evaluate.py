@@ -13,11 +13,9 @@ os.chdir(project_root)
 
 from shared import (
     load_pickle, bank_policy, random_policy, evaluate_policy,
-    print_results, print_action_dist, extract_state,
+    print_results, print_action_dist, extract_state, N_ACTIONS,
 )
 from shared.experiment_config import TRACKED_ACTIVITIES
-
-N_ACTIONS = [2, 2, 3]
 
 
 def count_activities_from_list(events, up_to_idx):

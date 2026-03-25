@@ -1,10 +1,10 @@
-"""Train ProCause LSTM S-learner + LSTM-DQN: causal reward estimation, no backward TD."""
+"""Train ProCause LSTM S-learner: causal reward estimation, no backward TD."""
 import sys
 import os
 import argparse
 import copy
+import random
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -16,12 +16,9 @@ project_root = os.path.dirname(os.path.dirname(script_dir))
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle
+from shared import load_pickle, FEATURE_COLS, N_ACTIONS, build_vocab_and_stats, encode, seed_worker
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-FEATURE_COLS = ['amount', 'est_quality', 'unc_quality', 'interest_rate', 'cum_cost', 'elapsed_time']
-N_ACTIONS    = [2, 2, 3]
 
 
 class LSTM_SLearner(nn.Module):
@@ -49,64 +46,6 @@ class LSTM_SLearner(nn.Module):
         return self.head(torch.cat([h_last, a_emb], dim=-1)).squeeze(-1)
 
 
-class LSTM_DQN(nn.Module):
-    """LSTM encoder + Q-head for one intervention."""
-
-    def __init__(self, n_activities, n_features, n_actions, emb_dim=32, hidden=128, n_layers=2, dropout=0.2):
-        super().__init__()
-        self.emb  = nn.Embedding(n_activities, emb_dim, padding_idx=0)
-        self.lstm = nn.LSTM(emb_dim + n_features, hidden, n_layers,
-                            batch_first=True, dropout=dropout if n_layers > 1 else 0)
-        self.fc   = nn.Sequential(
-            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, n_actions),
-        )
-
-    def forward(self, acts, feats, lens):
-        x = torch.cat([self.emb(acts), feats], dim=-1)
-        packed = nn.utils.rnn.pack_padded_sequence(x, lens.cpu(), batch_first=True, enforce_sorted=False)
-        _, (h, _) = self.lstm(packed)
-        return self.fc(h[-1])
-
-
-def build_vocab_and_stats(df):
-    """Build activity vocab and feature normalization from all prefixes."""
-    all_events = []
-    for prefixes in [df['prefix'], df['next_prefix']]:
-        for p in prefixes:
-            all_events.extend(p)
-
-    activities = list({e.get('activity', '') for e in all_events})
-    activity_to_idx = {a: i + 1 for i, a in enumerate(activities)}
-    activity_to_idx[''] = 0
-
-    def _vals(c):
-        return [float(v) for e in all_events if not np.isnan(v := float(e.get(c, 0) or 0))]
-    feat_means = {c: (np.mean(_vals(c)) if _vals(c) else 0.0) for c in FEATURE_COLS}
-    feat_stds  = {c: max(np.std(_vals(c))  if _vals(c) else 0.0, 1e-8) for c in FEATURE_COLS}
-
-    return activity_to_idx, feat_means, feat_stds
-
-
-def encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len):
-    """Encode a list of prefix sequences to padded tensors."""
-    n = len(prefixes)
-    acts = np.zeros((n, max_len), dtype=np.int64)
-    feats = np.zeros((n, max_len, len(FEATURE_COLS)), dtype=np.float32)
-    lens = np.ones(n, dtype=np.int64)
-
-    for i, p in enumerate(prefixes):
-        seq_len = min(len(p), max_len)
-        lens[i] = max(seq_len, 1)
-        for j, e in enumerate(p[:seq_len]):
-            acts[i, j] = activity_to_idx.get(e.get('activity', ''), 0)
-            for k, col in enumerate(FEATURE_COLS):
-                v = float(e.get(col, 0) or 0)
-                feats[i, j, k] = 0.0 if np.isnan(v) else (v - feat_means[col]) / feat_stds[col]
-
-    return acts, feats, lens
-
-
 class SLearnerDataset(Dataset):
     """Dataset for S-learner: (prefix, action) -> normalized outcome."""
 
@@ -125,25 +64,6 @@ class SLearnerDataset(Dataset):
             'lens': torch.LongTensor([self.lens[i]]),
             'action': torch.LongTensor([self.actions[i]]),
             'outcome': torch.FloatTensor([self.outcomes[i]]),
-        }
-
-
-class CATEDataset(Dataset):
-    """Dataset for Q-network: (prefix) -> CATE targets for all actions."""
-
-    def __init__(self, acts, feats, lens, cate_targets):
-        self.acts, self.feats, self.lens = acts, feats, lens
-        self.cate_targets = cate_targets
-
-    def __len__(self):
-        return len(self.cate_targets)
-
-    def __getitem__(self, i):
-        return {
-            'acts': torch.LongTensor(self.acts[i]),
-            'feats': torch.FloatTensor(self.feats[i]),
-            'lens': torch.LongTensor([self.lens[i]]),
-            'cate': torch.FloatTensor(self.cate_targets[i]),
         }
 
 
@@ -219,56 +139,11 @@ def compute_cate(slearner, acts, feats, lens, n_actions, batch_size=1024):
     return cate
 
 
-def train_q_on_cate(model, train_loader, val_loader, args):
-    """Train Q-network on CATE targets (full-information MSE, no bootstrapping)."""
-    opt = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=5)
-    best_val, best_state = float('inf'), copy.deepcopy(model.state_dict())
-    patience_count = 0
-
-    for epoch in range(args.epochs):
-        model.train()
-        tl = 0.0
-        for b in train_loader:
-            q = model(b['acts'].to(device), b['feats'].to(device), b['lens'].squeeze(1))
-            target = b['cate'].to(device)
-            loss = F.mse_loss(q, target)
-            opt.zero_grad()
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
-            tl += loss.item()
-
-        model.eval()
-        vl = 0.0
-        with torch.no_grad():
-            for b in val_loader:
-                q = model(b['acts'].to(device), b['feats'].to(device), b['lens'].squeeze(1))
-                vl += F.mse_loss(q, b['cate'].to(device)).item()
-        vl /= max(len(val_loader), 1)
-        scheduler.step(vl)
-
-        if vl < best_val - args.es_delta:
-            best_val, best_state = vl, copy.deepcopy(model.state_dict())
-            patience_count = 0
-        else:
-            patience_count += 1
-        if (epoch + 1) % 10 == 0:
-            print(f"  [{epoch+1:3d}/{args.epochs}] train={tl/len(train_loader):.4f}  val={vl:.4f}")
-        if patience_count >= args.patience:
-            print(f"  [early stop] epoch {epoch+1}, best_val={best_val:.4f}")
-            break
-
-    return best_state
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--n_cases',        type=int,   default=10000)
     parser.add_argument('--confounded',     action='store_true')
-    parser.add_argument('--epochs',         type=int,   default=50)
     parser.add_argument('--batch_size',     type=int,   default=256)
-    parser.add_argument('--lr',            type=float, default=1e-3)
     parser.add_argument('--emb_dim',        type=int,   default=32)
     parser.add_argument('--hidden',         type=int,   default=128)
     parser.add_argument('--n_layers',       type=int,   default=2)
@@ -283,6 +158,7 @@ def main():
     args = parser.parse_args()
 
     np.random.seed(args.seed)
+    random.seed(args.seed)
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
@@ -367,7 +243,10 @@ def main():
                                    sub_train['action'].tolist(), tr_outcomes_norm)
         va_sl_ds = SLearnerDataset(va_acts, va_feats, va_lens,
                                    sub_val['action'].tolist(), va_outcomes_norm)
-        tr_sl_loader = DataLoader(tr_sl_ds, batch_size=args.batch_size, shuffle=True)
+        g = torch.Generator()
+        g.manual_seed(args.seed + int_idx)
+        tr_sl_loader = DataLoader(tr_sl_ds, batch_size=args.batch_size, shuffle=True,
+                                  worker_init_fn=seed_worker, generator=g)
         va_sl_loader = DataLoader(va_sl_ds, batch_size=args.batch_size, shuffle=False)
 
         slearner = train_slearner(slearner, tr_sl_loader, va_sl_loader, args)

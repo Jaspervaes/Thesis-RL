@@ -12,12 +12,10 @@ os.chdir(project_root)
 
 from shared import (
     load_pickle, bank_policy, random_policy, evaluate_policy,
-    print_results, print_action_dist, LSTM_DQN, encode_prefix,
+    print_results, print_action_dist, LSTM_DQN, encode_prefix, N_ACTIONS,
 )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-N_ACTIONS = [2, 2, 3]
 
 
 class RIMSPolicy:
@@ -60,7 +58,8 @@ def main():
 
     def load_net(key, n_act):
         m = LSTM_DQN(cfg['n_activities'], cfg['n_features'], n_act,
-                     cfg['emb_dim'], cfg['hidden'], cfg['n_layers'], cfg['dropout']).to(device)
+                     cfg['emb_dim'], cfg['hidden'], cfg['n_layers'], cfg['dropout'],
+                     activity_enc=cfg.get('activity_enc', 'integer')).to(device)
         m.load_state_dict(ckpt[key])
         m.eval()
         return m

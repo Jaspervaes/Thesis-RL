@@ -10,7 +10,7 @@ project_root = os.path.dirname(os.path.dirname(script_dir))
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle, save_pickle, split_train_val, get_ir_action, STATE_DIM
+from shared import load_pickle, save_pickle, split_train_val, get_ir_action
 
 
 def extract_transitions(df, steps=3):

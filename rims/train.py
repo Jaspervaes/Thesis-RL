@@ -16,77 +16,9 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle, FEATURE_COLS, N_ACTIONS, LSTM_DQN, encode
+from shared import load_pickle, FEATURE_COLS, N_ACTIONS, LSTM_DQN, build_vocab_and_stats, encode
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-FEATURE_COLS = ['amount', 'est_quality', 'unc_quality', 'interest_rate', 'cum_cost', 'elapsed_time']
-N_ACTIONS    = [2, 2, 3]
-
-
-class RIMS_Model(nn.Module):
-    """
-    Shared LSTM encoder with three heads:
-    timing (proc_time, rem_time), outcome (per action), Q-values (per action).
-    """
-
-    def __init__(self, n_activities, n_features, n_actions, emb_dim=32, hidden=128, n_layers=2, dropout=0.2):
-        super().__init__()
-        self.emb  = nn.Embedding(n_activities, emb_dim, padding_idx=0)
-        self.lstm = nn.LSTM(emb_dim + n_features, hidden, n_layers,
-                            batch_first=True, dropout=dropout if n_layers > 1 else 0)
-        self.timing_head  = nn.Sequential(nn.Linear(hidden, hidden // 2), nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden // 2, 2))
-        self.outcome_head = nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden, n_actions))
-        self.q_head       = nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden, n_actions))
-
-    def encode(self, acts, feats, lens):
-        x = torch.cat([self.emb(acts), feats], dim=-1)
-        packed = nn.utils.rnn.pack_padded_sequence(x, lens.cpu(), batch_first=True, enforce_sorted=False)
-        _, (h, _) = self.lstm(packed)
-        return h[-1]
-
-    def forward(self, acts, feats, lens):
-        h = self.encode(acts, feats, lens)
-        return self.timing_head(h), self.outcome_head(h), self.q_head(h)
-
-    def q_values(self, acts, feats, lens):
-        return self.q_head(self.encode(acts, feats, lens))
-
-
-def build_vocab_and_stats(df):
-    """Build activity vocab and feature normalization stats."""
-    all_events = []
-    for prefixes in [df['prefix'], df['next_prefix']]:
-        for p in prefixes:
-            all_events.extend(p)
-
-    activities = list({e.get('activity', '') for e in all_events})
-    activity_to_idx = {a: i + 1 for i, a in enumerate(activities)}
-    activity_to_idx[''] = 0
-
-    def _vals(c):
-        return [float(v) for e in all_events if not np.isnan(v := float(e.get(c, 0) or 0))]
-    feat_means = {c: (np.mean(_vals(c)) if _vals(c) else 0.0) for c in FEATURE_COLS}
-    feat_stds  = {c: max(np.std(_vals(c))  if _vals(c) else 0.0, 1e-8) for c in FEATURE_COLS}
-
-    return activity_to_idx, feat_means, feat_stds
-
-
-def encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len):
-    """Encode list of prefix sequences to padded tensors."""
-    n = len(prefixes)
-    acts  = np.zeros((n, max_len), dtype=np.int64)
-    feats = np.zeros((n, max_len, len(FEATURE_COLS)), dtype=np.float32)
-    lens  = np.ones(n, dtype=np.int64)
-    for i, p in enumerate(prefixes):
-        seq_len = min(len(p), max_len)
-        lens[i] = max(seq_len, 1)
-        for j, e in enumerate(p[:seq_len]):
-            acts[i, j] = activity_to_idx.get(e.get('activity', ''), 0)
-            for k, col in enumerate(FEATURE_COLS):
-                v = float(e.get(col, 0) or 0)
-                feats[i, j, k] = 0.0 if np.isnan(v) else (v - feat_means[col]) / feat_stds[col]
-    return acts, feats, lens
 
 
 class ReplayBuffer:
@@ -223,6 +155,7 @@ def main():
     q_nets, q_targets, optimizers, replays = {}, {}, {}, {}
     for i in range(args.steps):
         q_nets[i], q_targets[i] = make_model(N_ACTIONS[i])
+        q_targets[i].eval()  # Disable dropout for target computation
         optimizers[i] = optim.Adam(q_nets[i].parameters(), lr=args.lr, weight_decay=1e-5)
         replays[i] = ReplayBuffer(args.buffer_size)
 
@@ -288,6 +221,9 @@ def main():
 
         # Validation
         if (episode + 1) % args.eval_every == 0:
+            # Put Q-nets in eval mode to disable dropout during validation
+            for i in range(args.steps):
+                q_nets[i].eval()
             val_rewards = []
             for _ in range(args.eval_episodes):
                 p, info = env.reset()
@@ -303,6 +239,9 @@ def main():
                     p, r, d, _, info = env.step(a)
                     sc += 1
                 val_rewards.append(r)
+            # Restore Q-nets to train mode for continued training
+            for i in range(args.steps):
+                q_nets[i].train()
 
             val_mean = np.mean(val_rewards)
             print(f"  [EVAL] episode {episode+1}: val_mean={val_mean:.1f}")

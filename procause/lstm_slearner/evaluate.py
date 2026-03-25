@@ -4,7 +4,6 @@ import os
 import argparse
 import numpy as np
 import torch
-import torch.nn as nn
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(script_dir))
@@ -13,64 +12,11 @@ os.chdir(project_root)
 
 from shared import (
     load_pickle, bank_policy, random_policy, evaluate_policy,
-    print_results, print_action_dist,
+    print_results, print_action_dist, N_ACTIONS, encode_prefix,
 )
+from procause.lstm_slearner.train import LSTM_SLearner
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-N_ACTIONS = [2, 2, 3]
-
-
-class LSTM_SLearner(nn.Module):
-    """LSTM encoder with action embedding for outcome prediction."""
-
-    def __init__(self, n_activities, n_features, n_actions, emb_dim=32, action_emb_dim=16,
-                 hidden=128, n_layers=2, dropout=0.2):
-        super().__init__()
-        self.n_actions = n_actions
-        self.emb  = nn.Embedding(n_activities, emb_dim, padding_idx=0)
-        self.lstm = nn.LSTM(emb_dim + n_features, hidden, n_layers,
-                            batch_first=True, dropout=dropout if n_layers > 1 else 0)
-        self.action_emb = nn.Embedding(n_actions, action_emb_dim)
-        self.head = nn.Sequential(
-            nn.Linear(hidden + action_emb_dim, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, 1),
-        )
-
-    def forward(self, acts, feats, lens, actions):
-        x = torch.cat([self.emb(acts), feats], dim=-1)
-        packed = nn.utils.rnn.pack_padded_sequence(x, lens.cpu(), batch_first=True, enforce_sorted=False)
-        _, (h, _) = self.lstm(packed)
-        h_last = h[-1]
-        a_emb = self.action_emb(actions)
-        return self.head(torch.cat([h_last, a_emb], dim=-1)).squeeze(-1)
-
-
-def encode_prefix(prefix, cfg):
-    """Encode a single prefix into padded tensors (batch size 1)."""
-    max_len = cfg['max_len']
-    a2i     = cfg['activity_to_idx']
-    means   = cfg['feat_means']
-    stds    = cfg['feat_stds']
-    cols    = cfg['feature_cols']
-
-    acts  = np.zeros((1, max_len), dtype=np.int64)
-    feats = np.zeros((1, max_len, len(cols)), dtype=np.float32)
-    seq_len = max(min(len(prefix), max_len), 1)
-
-    for j, e in enumerate(prefix[:seq_len]):
-        acts[0, j] = a2i.get(e.get('activity', ''), 0)
-        for k, col in enumerate(cols):
-            val = e.get(col, 0)
-            try:
-                val = float(val)
-            except (TypeError, ValueError):
-                val = 0.0
-            if not np.isfinite(val):
-                val = 0.0
-            feats[0, j, k] = (val - means[col]) / stds[col]
-
-    return torch.LongTensor(acts).to(device), torch.FloatTensor(feats).to(device), torch.LongTensor([seq_len])
 
 
 class ProCauseLSTMPolicy:

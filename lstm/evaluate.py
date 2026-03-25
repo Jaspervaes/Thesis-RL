@@ -12,9 +12,8 @@ os.chdir(project_root)
 from shared import (
     load_pickle, bank_policy, random_policy, evaluate_policy,
     print_results, print_action_dist,
-    N_ACTIONS, encode_prefix,
+    N_ACTIONS, LSTM_DQN, encode_prefix,
 )
-from lstm.train import LSTM_DQN
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
