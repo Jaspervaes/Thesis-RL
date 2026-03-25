@@ -16,7 +16,7 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle, STATE_DIM
+from shared import load_pickle, STATE_DIM, seed_worker
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -58,11 +58,14 @@ class TransitionDataset(Dataset):
         }
 
 
-def make_loader(df, int_idx, batch_size, shuffle=True):
+def make_loader(df, int_idx, batch_size, shuffle=True, seed=0):
     sub = df[df['intervention'] == int_idx].copy()
     if sub.empty:
         return None
-    return DataLoader(TransitionDataset(sub), batch_size=batch_size, shuffle=shuffle)
+    g = torch.Generator()
+    g.manual_seed(seed)
+    return DataLoader(TransitionDataset(sub), batch_size=batch_size, shuffle=shuffle,
+                      worker_init_fn=seed_worker, generator=g)
 
 
 def scale_col(df, col, mask, scaler):
@@ -179,7 +182,7 @@ def main():
 
     if args.steps == 1:
         Q1, Q1t = make_net(0)
-        tr0 = make_loader(df_train, 0, bs); va0 = make_loader(df_val, 0, bs, False)
+        tr0 = make_loader(df_train, 0, bs, seed=args.seed); va0 = make_loader(df_val, 0, bs, False)
         print("\n[Q1]")
         best1, _ = train_q(Q1, Q1t, optim.Adam(Q1.parameters(), args.lr), tr0, va0,
                            lambda b: norm(b['reward'].squeeze(1).to(device)), args)
@@ -191,8 +194,8 @@ def main():
     elif args.steps == 2:
         Q1, Q1t = make_net(0)
         Q2, Q2t = make_net(1)
-        tr0 = make_loader(df_train, 0, bs); va0 = make_loader(df_val, 0, bs, False)
-        tr1 = make_loader(df_train, 1, bs); va1 = make_loader(df_val, 1, bs, False)
+        tr0 = make_loader(df_train, 0, bs, seed=args.seed); va0 = make_loader(df_val, 0, bs, False)
+        tr1 = make_loader(df_train, 1, bs, seed=args.seed); va1 = make_loader(df_val, 1, bs, False)
 
         print("\n[Q2]")
         best2, _ = train_q(Q2, Q2t, optim.Adam(Q2.parameters(), args.lr), tr1, va1,
@@ -214,9 +217,9 @@ def main():
         Q1, Q1t = make_net(0)
         Q2, Q2t = make_net(1)
         Q3, Q3t = make_net(2)
-        tr0 = make_loader(df_train, 0, bs); va0 = make_loader(df_val, 0, bs, False)
-        tr1 = make_loader(df_train, 1, bs); va1 = make_loader(df_val, 1, bs, False)
-        tr2 = make_loader(df_train, 2, bs); va2 = make_loader(df_val, 2, bs, False)
+        tr0 = make_loader(df_train, 0, bs, seed=args.seed); va0 = make_loader(df_val, 0, bs, False)
+        tr1 = make_loader(df_train, 1, bs, seed=args.seed); va1 = make_loader(df_val, 1, bs, False)
+        tr2 = make_loader(df_train, 2, bs, seed=args.seed); va2 = make_loader(df_val, 2, bs, False)
 
         print("\n[Q3]")
         best3, _ = train_q(Q3, Q3t, optim.Adam(Q3.parameters(), args.lr), tr2, va2,

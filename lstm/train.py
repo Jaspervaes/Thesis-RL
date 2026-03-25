@@ -17,7 +17,7 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle, FEATURE_COLS, N_ACTIONS, LSTM_DQN, build_vocab_and_stats, encode
+from shared import load_pickle, FEATURE_COLS, N_ACTIONS, LSTM_DQN, build_vocab_and_stats, encode, seed_worker
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -271,7 +271,6 @@ def main():
         return m, mt
 
     def loader(df, int_idx, shuffle=True):
-        # Keep each intervention's sampling order reproducible across runs.
         return make_loader(df, int_idx, activity_to_idx, feat_means, feat_stds, max_len, bs, shuffle,
                            seed=args.seed + int_idx, activity_enc=args.activity_enc, n_activities=n_activities)
 

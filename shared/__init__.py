@@ -38,4 +38,5 @@ from shared.lstm_utils import (
     build_vocab_and_stats,
     encode,
     encode_prefix,
+    seed_worker,
 )
