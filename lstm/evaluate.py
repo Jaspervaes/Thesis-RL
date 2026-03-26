@@ -57,7 +57,7 @@ def main():
     ckpt   = torch.load(f"models/lstm_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth",
                         map_location=device, weights_only=False)
     cfg    = ckpt['config']
-    params = load_pickle(f"data/lstm_{suffix}_{args.n_cases}_params.pkl")
+    params = load_pickle(f"data/simbank_{suffix}_{args.n_cases}_params.pkl")
 
     def load_net(key, n_act):
         m = LSTM_DQN(cfg['n_activities'], cfg['n_features'], n_act,

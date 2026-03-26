@@ -63,7 +63,7 @@ def main():
     suffix = "CONF" if args.confounded else "RCT"
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
     ckpt   = load_pickle(f"models/kmeans_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pkl")
-    params = load_pickle(f"data/kmeans_{suffix}_{args.n_cases}_params.pkl")
+    params = load_pickle(f"data/simbank_{suffix}_{args.n_cases}_params.pkl")
 
     policy = KMeansPolicy(ckpt['models'], ckpt['q_tables'], steps=args.steps)
     label  = f'KMeans {suffix} ({args.steps}-step)'

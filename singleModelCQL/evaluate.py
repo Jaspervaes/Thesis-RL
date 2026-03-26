@@ -96,7 +96,7 @@ def main():
 
     label  = f'CQL-SM {suffix} ({args.steps}-step)'
     policy = CQLPolicy(model, ckpt['scaler'], steps=args.steps)
-    params = load_pickle(f"data/single_cql_{suffix}_{args.n_cases}_params.pkl")
+    params = load_pickle(f"data/simbank_{suffix}_{args.n_cases}_params.pkl")
 
     print(f"Evaluating Single-Model CQL — {suffix} | steps={args.steps}")
     bank_res   = evaluate_policy(bank_policy,   args.n_episodes, params, args.seed)

@@ -101,7 +101,7 @@ def main():
 
     label  = f'CQL-MM {suffix} ({args.steps}-step)'
     policy = CQLPolicy(nets, scalers, steps=args.steps)
-    params = load_pickle(f"data/multi_cql_{suffix}_{args.n_cases}_params.pkl")
+    params = load_pickle(f"data/simbank_{suffix}_{args.n_cases}_params.pkl")
 
     print(f"Evaluating Multi-Model CQL — {suffix} | steps={args.steps}")
     bank_res   = evaluate_policy(bank_policy,   args.n_episodes, params, args.seed)

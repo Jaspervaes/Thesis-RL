@@ -112,7 +112,7 @@ def main():
     base = f"data/multi_cql_{suffix}_{args.n_cases}"
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
 
-    df = load_pickle(f"{base}_raw.pkl")
+    df = load_pickle(f"data/simbank_{suffix}_{args.n_cases}_raw.pkl")
     df_train, df_val = split_train_val(df, val_ratio=0.2, seed=args.seed)
 
     train_rows = extract_transitions(df_train, args.steps)

@@ -10,7 +10,7 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import load_pickle, save_pickle, count_activities, extract_state, get_ir_action, STATE_DIM
+from shared import load_pickle, save_pickle, split_train_val, count_activities, extract_state, get_ir_action, STATE_DIM
 
 
 def extract_transitions(df, steps=3):
@@ -110,8 +110,8 @@ def main():
     base     = f"data/single_cql_{suffix}_{args.n_cases}"
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
 
-    df_train = pd.DataFrame(load_pickle(f"{base}_train.pkl"))
-    df_val   = pd.DataFrame(load_pickle(f"{base}_val.pkl"))
+    df       = load_pickle(f"data/simbank_{suffix}_{args.n_cases}_raw.pkl")
+    df_train, df_val = split_train_val(df, val_ratio=0.2, seed=args.seed)
 
     train_rows = extract_transitions(df_train, args.steps)
     val_rows   = extract_transitions(df_val,   args.steps)

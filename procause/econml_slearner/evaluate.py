@@ -79,7 +79,7 @@ def main():
     ckpt   = torch.load(f"models/procause_econml_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth",
                         map_location='cpu', weights_only=False)
     cfg    = ckpt['config']
-    params = load_pickle(f"data/procause_econml_{suffix}_{args.n_cases}_params.pkl")
+    params = load_pickle(f"data/simbank_{suffix}_{args.n_cases}_params.pkl")
 
     gbr_models = {}
     for int_idx in range(args.steps):
