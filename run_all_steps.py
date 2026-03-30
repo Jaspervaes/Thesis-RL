@@ -92,11 +92,7 @@ def run(cmd):
 
 
 def data_exists(method, suffix, n_cases):
-    prefix = FILE_PREFIX[method]
-    if method in SPLIT_DATA_METHODS:
-        path = os.path.join(script_dir, f"data/{prefix}_{suffix}_{n_cases}_train.pkl")
-    else:
-        path = os.path.join(script_dir, f"data/{prefix}_{suffix}_{n_cases}_raw.pkl")
+    path = os.path.join(script_dir, f"data/simbank_{suffix}_{n_cases}_raw.pkl")
     return os.path.exists(path)
 
 
