@@ -12,6 +12,8 @@ Figures produced:
     fig3_rct_vs_conf.pdf             — side-by-side RCT vs CONF for each method × steps
     fig4_seed_variance.pdf           — box plots of per-seed outcomes
     fig5_gain_heatmap.pdf            — heatmap: method × steps, colour = % gain vs Bank
+    fig7_dqn_vs_procause.pdf         — grouped bars: DQN vs DQN+ProCause
+    fig8_confounding_robustness.pdf  — confounding gap per method × steps
 """
 import sys
 import os
@@ -431,6 +433,128 @@ def fig6_incremental_gain(results, out_dir, suffixes):
     print(f"[OK] {path}")
 
 
+# ── Figure 7: DQN vs DQN+ProCause Direct Comparison ────────────────────────
+
+# Pairs: baseline method → ProCause variant(s) that use it as RL backbone
+PROCAUSE_PAIRS = {
+    'lstm': ['procause_lstm', 'procause_econml'],
+}
+PAIR_HATCHES = {'procause_lstm': '', 'procause_econml': '///'}
+PAIR_LABELS_SUFFIX = {'procause_lstm': '+ ProCause-LSTM', 'procause_econml': '+ ProCause-EconML'}
+
+
+def fig7_dqn_vs_procause(results, out_dir, suffixes):
+    """Grouped bars: DQN baseline vs DQN+ProCause for each step × suffix."""
+    n_suf = len(suffixes)
+    fig, axes = plt.subplots(1, n_suf, figsize=(7 * n_suf, 5.5), sharey=True)
+    if n_suf == 1:
+        axes = [axes]
+
+    for ax, suffix in zip(axes, suffixes):
+        steps_list = [1, 2, 3]
+        # For each step: bars for lstm, procause_lstm, procause_econml
+        group_methods = ['lstm', 'procause_lstm', 'procause_econml']
+        bar_labels = ['LSTM-DQN', 'LSTM-DQN\n+ LSTM S-learner', 'LSTM-DQN\n+ EconML S-learner']
+        bar_colors = [COLORS['lstm'], COLORS['procause_lstm'], COLORS['procause_econml']]
+        n_bars = len(group_methods)
+        width = 0.22
+
+        x = np.arange(len(steps_list))
+
+        # Bank baseline
+        agg0 = get_agg(results, 'lstm', suffix, 3)
+        if agg0:
+            ax.axhline(agg0['Bank']['mean'], color='black', lw=1.5, linestyle='--',
+                       label='Bank policy', zorder=5)
+
+        for bi, (method, blabel, bcol) in enumerate(zip(group_methods, bar_labels, bar_colors)):
+            means, errs = [], []
+            for steps in steps_list:
+                agg = get_agg(results, method, suffix, steps)
+                if agg is None:
+                    means.append(0); errs.append(0); continue
+                pk = [k for k in agg if k not in ('Bank', 'Random')][0]
+                means.append(agg[pk]['mean'])
+                errs.append(agg[pk]['std'])
+
+            offset = (bi - n_bars / 2 + 0.5) * width
+            ax.bar(x + offset, means, width * 0.9, yerr=errs, capsize=3,
+                   color=bcol, label=blabel, alpha=0.85, error_kw={'lw': 1})
+
+        ax.set_title(f'{suffix} Data')
+        ax.set_xlabel('Steps')
+        ax.set_xticks(x)
+        ax.set_xticklabels(['1-step\n(Int. 0)', '2-step\n(Int. 0–1)', '3-step\n(All)'])
+        ax.set_ylabel('Average Outcome' if suffix == suffixes[0] else '')
+        ax.legend(frameon=False, fontsize=8)
+        ax.grid(axis='y', alpha=0.3)
+
+    fig.suptitle('DQN vs DQN + ProCause: Effect of Causal Reward Estimation',
+                 fontsize=13, fontweight='bold')
+    plt.tight_layout()
+    path = os.path.join(out_dir, 'fig7_dqn_vs_procause.pdf')
+    plt.savefig(path, bbox_inches='tight')
+    plt.savefig(path.replace('.pdf', '.png'), bbox_inches='tight')
+    plt.close()
+    print(f"[OK] {path}")
+
+
+# ── Figure 8: Confounding Robustness ────────────────────────────────────────
+
+def fig8_confounding_robustness(results, out_dir):
+    """Bar chart: confounding gap (RCT gain - CONF gain) per method × steps.
+    Lower gap = more robust to confounding."""
+    available = [m for m in METHODS
+                 if any(f"{m}_CONF_{s}" in results and f"{m}_RCT_{s}" in results
+                        for s in [1, 2, 3])]
+    if not available:
+        print("[skip] fig8: need both RCT and CONF results")
+        return
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
+    n_methods = len(available)
+    width = 0.65
+
+    for si, steps in enumerate([1, 2, 3]):
+        ax = axes[si]
+        gaps, colors_list, labels_list = [], [], []
+
+        for method in available:
+            g_rct, _ = get_gain(get_agg(results, method, 'RCT', steps))
+            g_conf, _ = get_gain(get_agg(results, method, 'CONF', steps))
+            if g_rct is not None and g_conf is not None:
+                gap = g_rct - g_conf
+                gaps.append(gap)
+                colors_list.append(COLORS[method])
+                labels_list.append(METHOD_LABELS[method])
+
+        x = np.arange(len(gaps))
+        bars = ax.bar(x, gaps, width, color=colors_list, alpha=0.85)
+
+        # Annotate values
+        for xi, (bar, gap) in enumerate(zip(bars, gaps)):
+            va = 'bottom' if gap >= 0 else 'top'
+            ax.text(bar.get_x() + bar.get_width() / 2, gap,
+                    f'{gap:+.0f}pp', ha='center', va=va, fontsize=8, fontweight='bold')
+
+        ax.axhline(0, color='grey', lw=0.8, linestyle='--', alpha=0.6)
+        ax.set_title(f'{steps}-step')
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels_list, rotation=35, ha='right', fontsize=8)
+        ax.set_ylabel('Confounding Gap (pp)\n(RCT gain − CONF gain)' if si == 0 else '')
+        ax.grid(axis='y', alpha=0.3)
+
+    fig.suptitle('Confounding Robustness: Performance Drop from RCT → Confounded\n'
+                 '(lower = more robust)',
+                 fontsize=13, fontweight='bold')
+    plt.tight_layout()
+    path = os.path.join(out_dir, 'fig8_confounding_robustness.pdf')
+    plt.savefig(path, bbox_inches='tight')
+    plt.savefig(path.replace('.pdf', '.png'), bbox_inches='tight')
+    plt.close()
+    print(f"[OK] {path}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -470,9 +594,11 @@ def main():
     fig4_seed_variance(results, out_dir, suffixes)
     fig5_gain_heatmap(results, out_dir, suffixes)
     fig6_incremental_gain(results, out_dir, suffixes)
+    fig7_dqn_vs_procause(results, out_dir, suffixes)
+    fig8_confounding_robustness(results, out_dir)
 
     print(f"\n[OK] All figures saved to {out_dir}/")
-    print("     Files: fig1_*.pdf/.png through fig6_*.pdf/.png")
+    print("     Files: fig1_*.pdf/.png through fig8_*.pdf/.png")
 
 
 if __name__ == "__main__":
