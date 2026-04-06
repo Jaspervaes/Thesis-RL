@@ -71,7 +71,7 @@ def main():
         models[2] = load_net('Q3', N_ACTIONS[2])
 
     policy = ProCauseLSTMPolicy(models, cfg, steps=args.steps)
-    label  = f'ProCause-LSTM {suffix} ({args.steps}-step)'
+    label  = f'ProCause LSTM-DQN {suffix} ({args.steps}-step)'
 
     print(f"Evaluating ProCause LSTM — {suffix} | steps={args.steps}")
     bank_res   = evaluate_policy(bank_policy,   args.n_episodes, params, args.seed)
@@ -84,7 +84,7 @@ def main():
     print_action_dist(results)
 
     gain = ((pc_res['avg'] / bank_res['avg']) - 1) * 100
-    print(f"\nProCause-LSTM {'beats' if gain > 0 else 'underperforms'} Bank by {gain:+.1f}%")
+    print(f"\nProCause LSTM-DQN {'beats' if gain > 0 else 'underperforms'} Bank by {gain:+.1f}%")
 
     if args.results_file:
         import json

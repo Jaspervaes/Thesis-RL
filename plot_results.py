@@ -31,9 +31,9 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 # ── Style ─────────────────────────────────────────────────────────────────────
 METHODS   = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL', 'procause_lstm', 'procause_econml']
 METHOD_LABELS = {
-    'kmeans': 'K-Means', 'lstm': 'LSTM-DQN', 'rims': 'RIMS',
-    'multiModelCQL': 'CQL-MM', 'singleModelCQL': 'CQL-SM',
-    'procause_lstm': 'ProCause-LSTM', 'procause_econml': 'ProCause-EconML',
+    'kmeans': 'K-Means', 'lstm': 'LSTM-DQN', 'rims': 'RIMS-DQN',
+    'multiModelCQL': 'CQL-MN', 'singleModelCQL': 'CQL-SN',
+    'procause_lstm': 'ProCause LSTM-DQN', 'procause_econml': 'ProCause EconML-DQN',
 }
 COLORS    = {
     'kmeans': '#2196F3', 'lstm': '#FF9800', 'rims': '#4CAF50',
@@ -454,7 +454,7 @@ def fig7_dqn_vs_procause(results, out_dir, suffixes):
         steps_list = [1, 2, 3]
         # For each step: bars for lstm, procause_lstm, procause_econml
         group_methods = ['lstm', 'procause_lstm', 'procause_econml']
-        bar_labels = ['LSTM-DQN', 'LSTM-DQN\n+ LSTM S-learner', 'LSTM-DQN\n+ EconML S-learner']
+        bar_labels = ['LSTM-DQN', 'ProCause\nLSTM-DQN', 'ProCause\nEconML-DQN']
         bar_colors = [COLORS['lstm'], COLORS['procause_lstm'], COLORS['procause_econml']]
         n_bars = len(group_methods)
         width = 0.22

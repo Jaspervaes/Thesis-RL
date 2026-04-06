@@ -80,9 +80,6 @@ FILE_PREFIX = {
     'procause_econml':  'procause_econml',
 }
 
-# singleModelCQL generates _train.pkl/_val.pkl instead of _raw.pkl
-SPLIT_DATA_METHODS = {'singleModelCQL'}
-
 
 def run(cmd):
     print(f"    $ {' '.join(cmd)}", flush=True)

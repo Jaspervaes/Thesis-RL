@@ -1,8 +1,7 @@
-"""Convert raw SimBank data to Multi-Model CQL transitions."""
+"""Convert raw SimBank data to Multi-Model CQL transitions with prefix sequences."""
 import sys
 import os
 import argparse
-import numpy as np
 import pandas as pd
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -10,19 +9,16 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-from shared import (
-    load_pickle, save_pickle, split_train_val,
-    count_activities, extract_state, get_ir_action, STATE_DIM,
-)
+from shared import load_pickle, save_pickle, split_train_val, get_ir_action
 
 
 def extract_transitions(df, steps=3):
     rows = []
-    z = np.zeros(STATE_DIM, dtype=np.float32)
 
     for _, group in df.groupby('case_nr'):
         group = group.sort_values('timestamp').reset_index(drop=True)
         outcome = float(group['outcome'].iloc[-1])
+        events  = group.to_dict('records')
 
         int0_rows = group[group['activity'].isin(['start_standard', 'start_priority'])]
         if int0_rows.empty or int0_rows.index[0] == 0:
@@ -30,18 +26,14 @@ def extract_transitions(df, steps=3):
 
         i0 = int0_rows.index[0]
         a0 = 1 if group.loc[i0, 'activity'] == 'start_priority' else 0
-        # Q1 state is 5-dim (base features only)
-        s0 = extract_state(group.loc[i0 - 1], count_activities(group, i0))[:5]
+        p0 = events[:i0]
 
         if steps == 1:
-            rows.append({'state': s0, 'action': a0, 'reward': outcome,
-                         'next_state': z.copy(), 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+            rows.append({'prefix': p0, 'action': a0, 'reward': outcome,
+                         'next_prefix': [], 'terminal': True, 'intervention': 0, 'next_intervention': -1})
             continue
 
-        int1_rows = group[
-            group['activity'].isin(['contact_headquarters', 'skip_contact']) &
-            (group.index > i0)
-        ]
+        int1_rows = group[group['activity'].isin(['contact_headquarters', 'skip_contact']) & (group.index > i0)]
         int2_rows = group[(group['activity'] == 'calculate_offer') & (group.index > i0)]
         has1, has2 = not int1_rows.empty, not int2_rows.empty
 
@@ -49,17 +41,14 @@ def extract_transitions(df, steps=3):
             if has1:
                 i1 = int1_rows.index[0]
                 a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
-                s1 = extract_state(group.loc[i1 - 1], count_activities(group, i1))
+                p1 = events[:i1]
                 rows += [
-                    {'state': s0, 'action': a0, 'reward': 0.0, 'next_state': s1,
-                     'terminal': False, 'intervention': 0, 'next_intervention': 1},
-                    {'state': s1, 'action': a1, 'reward': outcome,
-                     'next_state': z.copy(), 'terminal': True, 'intervention': 1, 'next_intervention': -1},
+                    {'prefix': p0, 'action': a0, 'reward': 0.0,    'next_prefix': p1, 'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                    {'prefix': p1, 'action': a1, 'reward': outcome, 'next_prefix': [], 'terminal': True,  'intervention': 1, 'next_intervention': -1},
                 ]
             else:
-                # Priority path: outcome determined by bank at int2
-                rows.append({'state': s0, 'action': a0, 'reward': outcome,
-                             'next_state': z.copy(), 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+                rows.append({'prefix': p0, 'action': a0, 'reward': outcome,
+                             'next_prefix': [], 'terminal': True, 'intervention': 0, 'next_intervention': -1})
             continue
 
         # steps == 3
@@ -67,35 +56,31 @@ def extract_transitions(df, steps=3):
             i1, i2 = int1_rows.index[0], int2_rows.index[0]
             a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
             a2 = get_ir_action(group.loc[i2].get('interest_rate', 0.08))
-            s1 = extract_state(group.loc[i1 - 1], count_activities(group, i1))
-            s2 = extract_state(group.loc[i2 - 1], count_activities(group, i2))
+            p1, p2 = events[:i1], events[:i2]
             rows += [
-                {'state': s0, 'action': a0, 'reward': 0.0,    'next_state': s1,       'terminal': False, 'intervention': 0, 'next_intervention': 1},
-                {'state': s1, 'action': a1, 'reward': 0.0,    'next_state': s2,       'terminal': False, 'intervention': 1, 'next_intervention': 2},
-                {'state': s2, 'action': a2, 'reward': outcome, 'next_state': z.copy(), 'terminal': True,  'intervention': 2, 'next_intervention': -1},
+                {'prefix': p0, 'action': a0, 'reward': 0.0,    'next_prefix': p1, 'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                {'prefix': p1, 'action': a1, 'reward': 0.0,    'next_prefix': p2, 'terminal': False, 'intervention': 1, 'next_intervention': 2},
+                {'prefix': p2, 'action': a2, 'reward': outcome, 'next_prefix': [], 'terminal': True,  'intervention': 2, 'next_intervention': -1},
             ]
-
         elif not has1 and has2:
             i2 = int2_rows.index[0]
             a2 = get_ir_action(group.loc[i2].get('interest_rate', 0.08))
-            s2 = extract_state(group.loc[i2 - 1], count_activities(group, i2))
+            p2 = events[:i2]
             rows += [
-                {'state': s0, 'action': a0, 'reward': 0.0,    'next_state': s2,       'terminal': False, 'intervention': 0, 'next_intervention': 2},
-                {'state': s2, 'action': a2, 'reward': outcome, 'next_state': z.copy(), 'terminal': True,  'intervention': 2, 'next_intervention': -1},
+                {'prefix': p0, 'action': a0, 'reward': 0.0,    'next_prefix': p2, 'terminal': False, 'intervention': 0, 'next_intervention': 2},
+                {'prefix': p2, 'action': a2, 'reward': outcome, 'next_prefix': [], 'terminal': True,  'intervention': 2, 'next_intervention': -1},
             ]
-
         elif has1:
             i1 = int1_rows.index[0]
             a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
-            s1 = extract_state(group.loc[i1 - 1], count_activities(group, i1))
+            p1 = events[:i1]
             rows += [
-                {'state': s0, 'action': a0, 'reward': 0.0,    'next_state': s1,       'terminal': False, 'intervention': 0, 'next_intervention': 1},
-                {'state': s1, 'action': a1, 'reward': outcome, 'next_state': z.copy(), 'terminal': True,  'intervention': 1, 'next_intervention': -1},
+                {'prefix': p0, 'action': a0, 'reward': 0.0,    'next_prefix': p1, 'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                {'prefix': p1, 'action': a1, 'reward': outcome, 'next_prefix': [], 'terminal': True,  'intervention': 1, 'next_intervention': -1},
             ]
-
         else:
-            rows.append({'state': s0, 'action': a0, 'reward': outcome,
-                         'next_state': z.copy(), 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+            rows.append({'prefix': p0, 'action': a0, 'reward': outcome,
+                         'next_prefix': [], 'terminal': True, 'intervention': 0, 'next_intervention': -1})
 
     return rows
 

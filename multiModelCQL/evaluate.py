@@ -2,9 +2,7 @@
 import sys
 import os
 import argparse
-import numpy as np
 import torch
-import torch.nn as nn
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
@@ -13,95 +11,67 @@ os.chdir(project_root)
 
 from shared import (
     load_pickle, bank_policy, random_policy, evaluate_policy,
-    print_results, print_action_dist,
-    BASE_FEATURES, TRACKED_ACTIVITIES, STATE_DIM,
+    print_results, print_action_dist, N_ACTIONS, LSTM_DQN, encode_prefix,
 )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class QNetwork(nn.Module):
-    def __init__(self, state_dim, n_actions, hidden):
-        super().__init__()
-        layers, d = [], state_dim
-        for h in hidden:
-            layers += [nn.Linear(d, h), nn.ReLU(), nn.LayerNorm(h)]
-            d = h
-        layers.append(nn.Linear(d, n_actions))
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.net(x)
-
-
 class CQLPolicy:
-    def __init__(self, nets, scalers, steps=3):
-        self.nets    = nets
-        self.scalers = scalers
-        self.steps   = steps
-        self.counts  = {a: 0 for a in TRACKED_ACTIVITIES}
+    """CQL-MN policy with separate LSTM-DQN Q-networks per intervention."""
+
+    def __init__(self, models, cfg, steps=3):
+        self.models = models
+        self.cfg    = cfg
+        self.steps  = steps
 
     def reset(self):
-        self.counts = {a: 0 for a in TRACKED_ACTIVITIES}
+        pass
 
     def __call__(self, prev_event, int_idx, prefix=None):
-        if int_idx >= self.steps:
+        if int_idx >= self.steps or int_idx not in self.models:
             return bank_policy(prev_event, int_idx)
-
-        if prefix:
-            self.counts = {a: 0 for a in TRACKED_ACTIVITIES}
-            for e in prefix:
-                act = e.get('activity', '').lower()
-                for t in TRACKED_ACTIVITIES:
-                    if t in act:
-                        self.counts[t] += 1
-
-        state = [float(prev_event.get(f, 0)) for f in BASE_FEATURES]
-        if int_idx > 0:
-            state += [float(self.counts.get(a, 0)) for a in TRACKED_ACTIVITIES]
-
-        state = self.scalers[int_idx].transform(np.array(state, dtype=np.float32).reshape(1, -1))[0]
+        acts, feats, lens = encode_prefix(prefix or [], self.cfg)
         with torch.no_grad():
-            return self.nets[int_idx](torch.FloatTensor(state).unsqueeze(0).to(device)).argmax(1).item()
+            q = self.models[int_idx](acts, feats, lens)
+        return q[0, :N_ACTIONS[int_idx]].argmax().item()
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_cases',      type=int,  default=10000)
+    parser.add_argument('--n_cases',      type=int, default=10000)
     parser.add_argument('--confounded',   action='store_true')
-    parser.add_argument('--steps',        type=int,  default=3, choices=[1, 2, 3])
-    parser.add_argument('--n_episodes',   type=int,  default=1000)
-    parser.add_argument('--seed',         type=int,  default=1042)
-    parser.add_argument('--train_seed',   type=int,  default=42)
-    parser.add_argument('--results_file', type=str,  default=None)
+    parser.add_argument('--n_episodes',   type=int, default=1000)
+    parser.add_argument('--seed',         type=int, default=1042)
+    parser.add_argument('--train_seed',   type=int, default=42)
+    parser.add_argument('--steps',        type=int, default=3, choices=[1, 2, 3])
+    parser.add_argument('--results_file', type=str, default=None)
     args = parser.parse_args()
 
-    suffix   = "CONF" if args.confounded else "RCT"
+    suffix = "CONF" if args.confounded else "RCT"
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
-    ckpt = torch.load(
-        f"models/multi_cql_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth",
-        map_location=device, weights_only=False,
-    )
-    cfg = ckpt['config']
-
-    def load_net(i):
-        q = QNetwork(cfg['state_dims'][i], cfg['n_actions'][i], cfg['hidden']).to(device)
-        q.load_state_dict(ckpt[f'Q{i+1}'])
-        q.eval()
-        return q
-
-    nets    = {0: load_net(0)}
-    scalers = {0: ckpt['scaler1']}
-    if args.steps >= 2:
-        nets[1]    = load_net(1)
-        scalers[1] = ckpt['scaler2']
-    if args.steps >= 3:
-        nets[2]    = load_net(2)
-        scalers[2] = ckpt['scaler3']
-
-    label  = f'CQL-MM {suffix} ({args.steps}-step)'
-    policy = CQLPolicy(nets, scalers, steps=args.steps)
+    ckpt = torch.load(f"models/multi_cql_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth",
+                      map_location=device, weights_only=False)
+    cfg    = ckpt['config']
     params = load_pickle(f"data/simbank_{suffix}_{args.n_cases}_params.pkl")
+
+    def load_net(key, n_act):
+        m = LSTM_DQN(cfg['n_activities'], cfg['n_features'], n_act,
+                     cfg['emb_dim'], cfg['hidden'], cfg['n_layers'], cfg['dropout']).to(device)
+        m.load_state_dict(ckpt[key])
+        m.eval()
+        return m
+
+    models = {}
+    if 'Q1' in ckpt:
+        models[0] = load_net('Q1', N_ACTIONS[0])
+    if args.steps >= 2 and 'Q2' in ckpt:
+        models[1] = load_net('Q2', N_ACTIONS[1])
+    if args.steps >= 3 and 'Q3' in ckpt:
+        models[2] = load_net('Q3', N_ACTIONS[2])
+
+    label  = f'CQL-MN {suffix} ({args.steps}-step)'
+    policy = CQLPolicy(models, cfg, steps=args.steps)
 
     print(f"Evaluating Multi-Model CQL — {suffix} | steps={args.steps}")
     bank_res   = evaluate_policy(bank_policy,   args.n_episodes, params, args.seed)
@@ -114,7 +84,7 @@ def main():
     print_action_dist(results)
 
     gain = ((cql_res['avg'] / bank_res['avg']) - 1) * 100
-    print(f"\nCQL-MM {'beats' if gain > 0 else 'underperforms'} Bank by {gain:+.1f}%")
+    print(f"\nCQL-MN {'beats' if gain > 0 else 'underperforms'} Bank by {gain:+.1f}%")
 
     if args.results_file:
         import json
