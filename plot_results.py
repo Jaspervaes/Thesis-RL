@@ -115,6 +115,16 @@ def fig1_marginal_contribution(results, out_dir, suffixes):
     for ax, suffix in zip(axes, suffixes):
         ax.axhline(0, color='grey', lw=0.8, linestyle='--', alpha=0.6, label='Bank baseline (0%)')
 
+        # Random baseline line
+        any_agg = get_agg(results, METHODS[0], suffix, 3)
+        if any_agg and 'Random' in any_agg:
+            rand_m = any_agg['Random']['mean']
+            bank_m = any_agg['Bank']['mean']
+            if bank_m > 0:
+                rand_gain = ((rand_m / bank_m) - 1) * 100
+                ax.axhline(rand_gain, color='grey', lw=1.2, linestyle=':', alpha=0.8,
+                           label=f'Random ({rand_gain:.0f}%)')
+
         for method in METHODS:
             gains, stds, xs = [], [], []
             for steps in [1, 2, 3]:
@@ -167,14 +177,19 @@ def fig2_absolute_performance(results, out_dir, suffixes):
         n_steps = len(steps_list)
         x = np.arange(n_steps) * (n_methods * width + 0.6)
 
-        bank_vals = []
+        bank_vals, rand_vals = [], []
         for steps in steps_list:
             agg = get_agg(results, available_methods[0], suffix, steps)
             if agg:
                 bank_vals.append(agg['Bank']['mean'])
+                if 'Random' in agg:
+                    rand_vals.append(agg['Random']['mean'])
         if bank_vals:
             ax.axhline(np.mean(bank_vals), color='black', lw=1.5, linestyle='--',
                        label='Bank policy', zorder=5)
+        if rand_vals:
+            ax.axhline(np.mean(rand_vals), color='grey', lw=1.2, linestyle=':',
+                       label='Random policy', zorder=5)
 
         for mi, method in enumerate(available_methods):
             means, errs = [], []
@@ -312,6 +327,15 @@ def fig4_seed_variance(results, out_dir, suffixes):
                 ax.axvline(end + 0.25, color='lightgrey', lw=0.8)
 
         ax.axhline(0, color='grey', lw=0.8, linestyle='--', alpha=0.6)
+        # Random baseline gain
+        any_agg = get_agg(results, METHODS[0], suffix, 3)
+        if any_agg and 'Random' in any_agg:
+            rand_m = any_agg['Random']['mean']
+            bank_m = any_agg['Bank']['mean']
+            if bank_m > 0:
+                rand_gain = ((rand_m / bank_m) - 1) * 100
+                ax.axhline(rand_gain, color='grey', lw=1.0, linestyle=':', alpha=0.8)
+
         ax.set_xticks(positions)
         ax.set_xticklabels(labels_all, rotation=45, ha='right', fontsize=8)
         ax.set_title(f'{suffix} Data')
@@ -461,11 +485,14 @@ def fig7_dqn_vs_procause(results, out_dir, suffixes):
 
         x = np.arange(len(steps_list))
 
-        # Bank baseline
+        # Bank and Random baselines
         agg0 = get_agg(results, 'lstm', suffix, 3)
         if agg0:
             ax.axhline(agg0['Bank']['mean'], color='black', lw=1.5, linestyle='--',
                        label='Bank policy', zorder=5)
+            if 'Random' in agg0:
+                ax.axhline(agg0['Random']['mean'], color='grey', lw=1.2, linestyle=':',
+                           label='Random policy', zorder=5)
 
         for bi, (method, blabel, bcol) in enumerate(zip(group_methods, bar_labels, bar_colors)):
             means, errs = [], []

@@ -1091,31 +1091,31 @@
     "method": "rims",
     "suffix": "CONF",
     "steps": 2,
-    "method_label": "RIMS CONF (2-step)",
+    "method_label": "RIMS-DQN CONF (2-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "RIMS CONF (2-step)": 1105.4624813791263,
+        "RIMS-DQN CONF (2-step)": 1024.0904658333984,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "RIMS CONF (2-step)": 170.75047663751405,
+        "RIMS-DQN CONF (2-step)": 772.2062664778152,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "RIMS CONF (2-step)": 793.5202032543858,
+        "RIMS-DQN CONF (2-step)": 1232.1404789093797,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "RIMS CONF (2-step)": 1065.3878863833029,
+        "RIMS-DQN CONF (2-step)": 750.576006029573,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "RIMS CONF (2-step)": 940.3759977208748,
+        "RIMS-DQN CONF (2-step)": 1033.8898730432554,
         "Random": 219.4117088322532
       }
     },
@@ -1142,15 +1142,15 @@
           219.4117088322532
         ]
       },
-      "RIMS CONF (2-step)": {
-        "mean": 815.0994090750407,
-        "std": 340.08836150363163,
+      "RIMS-DQN CONF (2-step)": {
+        "mean": 962.5806180586844,
+        "std": 180.3991901661533,
         "per_seed": [
-          1105.4624813791263,
-          170.75047663751405,
-          793.5202032543858,
-          1065.3878863833029,
-          940.3759977208748
+          1024.0904658333984,
+          772.2062664778152,
+          1232.1404789093797,
+          750.576006029573,
+          1033.8898730432554
         ]
       }
     }
@@ -1159,31 +1159,31 @@
     "method": "rims",
     "suffix": "CONF",
     "steps": 3,
-    "method_label": "RIMS CONF (3-step)",
+    "method_label": "RIMS-DQN CONF (3-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "RIMS CONF (3-step)": 1712.6995078595244,
+        "RIMS-DQN CONF (3-step)": 2472.262542886463,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "RIMS CONF (3-step)": 1798.8614018088276,
+        "RIMS-DQN CONF (3-step)": 1726.5347514429866,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "RIMS CONF (3-step)": 2105.6831934578377,
+        "RIMS-DQN CONF (3-step)": 1200.6991962881116,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "RIMS CONF (3-step)": 1511.9620973002914,
+        "RIMS-DQN CONF (3-step)": 2118.036135112593,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "RIMS CONF (3-step)": 1661.561133427549,
+        "RIMS-DQN CONF (3-step)": 2547.5181861793176,
         "Random": 219.4117088322532
       }
     },
@@ -1210,15 +1210,15 @@
           219.4117088322532
         ]
       },
-      "RIMS CONF (3-step)": {
-        "mean": 1758.153466770806,
-        "std": 197.20059764077465,
+      "RIMS-DQN CONF (3-step)": {
+        "mean": 2013.0101623818944,
+        "std": 499.9118518618658,
         "per_seed": [
-          1712.6995078595244,
-          1798.8614018088276,
-          2105.6831934578377,
-          1511.9620973002914,
-          1661.561133427549
+          2472.262542886463,
+          1726.5347514429866,
+          1200.6991962881116,
+          2118.036135112593,
+          2547.5181861793176
         ]
       }
     }
@@ -2043,31 +2043,31 @@
     "method": "procause_lstm",
     "suffix": "RCT",
     "steps": 1,
-    "method_label": "ProCause-LSTM RCT (1-step)",
+    "method_label": "ProCause LSTM-DQN RCT (1-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-LSTM RCT (1-step)": 119.21045650622118,
+        "ProCause LSTM-DQN RCT (1-step)": -378.7824183341145,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-LSTM RCT (1-step)": 149.82628324254676,
+        "ProCause LSTM-DQN RCT (1-step)": 127.47149370733781,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-LSTM RCT (1-step)": 114.20427802148006,
+        "ProCause LSTM-DQN RCT (1-step)": 306.6628416781466,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-LSTM RCT (1-step)": -284.21046622968953,
+        "ProCause LSTM-DQN RCT (1-step)": -201.06666826227877,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-LSTM RCT (1-step)": 359.3837135190111,
+        "ProCause LSTM-DQN RCT (1-step)": 114.86452763452348,
         "Random": 219.4117088322532
       }
     },
@@ -2094,15 +2094,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-LSTM RCT (1-step)": {
-        "mean": 91.68285301191392,
-        "std": 208.61696008920083,
+      "ProCause LSTM-DQN RCT (1-step)": {
+        "mean": -6.170044715277072,
+        "std": 247.87033632485708,
         "per_seed": [
-          119.21045650622118,
-          149.82628324254676,
-          114.20427802148006,
-          -284.21046622968953,
-          359.3837135190111
+          -378.7824183341145,
+          127.47149370733781,
+          306.6628416781466,
+          -201.06666826227877,
+          114.86452763452348
         ]
       }
     }
@@ -2111,31 +2111,31 @@
     "method": "procause_lstm",
     "suffix": "RCT",
     "steps": 2,
-    "method_label": "ProCause-LSTM RCT (2-step)",
+    "method_label": "ProCause LSTM-DQN RCT (2-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-LSTM RCT (2-step)": 110.63483624709907,
+        "ProCause LSTM-DQN RCT (2-step)": 2064.0118089741654,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-LSTM RCT (2-step)": -107.22116578822715,
+        "ProCause LSTM-DQN RCT (2-step)": 2138.930012621476,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-LSTM RCT (2-step)": -36.20933818612322,
+        "ProCause LSTM-DQN RCT (2-step)": 2198.4461896269095,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-LSTM RCT (2-step)": -125.45907202256917,
+        "ProCause LSTM-DQN RCT (2-step)": 2165.2921111974297,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-LSTM RCT (2-step)": -63.327845549138594,
+        "ProCause LSTM-DQN RCT (2-step)": 2531.2496640211625,
         "Random": 219.4117088322532
       }
     },
@@ -2162,15 +2162,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-LSTM RCT (2-step)": {
-        "mean": -44.31651705979182,
-        "std": 83.63992815562628,
+      "ProCause LSTM-DQN RCT (2-step)": {
+        "mean": 2219.5859572882287,
+        "std": 162.01090989705014,
         "per_seed": [
-          110.63483624709907,
-          -107.22116578822715,
-          -36.20933818612322,
-          -125.45907202256917,
-          -63.327845549138594
+          2064.0118089741654,
+          2138.930012621476,
+          2198.4461896269095,
+          2165.2921111974297,
+          2531.2496640211625
         ]
       }
     }
@@ -2179,31 +2179,31 @@
     "method": "procause_lstm",
     "suffix": "RCT",
     "steps": 3,
-    "method_label": "ProCause-LSTM RCT (3-step)",
+    "method_label": "ProCause LSTM-DQN RCT (3-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-LSTM RCT (3-step)": 969.9435711916974,
+        "ProCause LSTM-DQN RCT (3-step)": 4468.425417432,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-LSTM RCT (3-step)": 1310.0640627788575,
+        "ProCause LSTM-DQN RCT (3-step)": 4680.853857623125,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-LSTM RCT (3-step)": 1520.7798987151393,
+        "ProCause LSTM-DQN RCT (3-step)": 4904.915161463143,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-LSTM RCT (3-step)": 824.4773386331432,
+        "ProCause LSTM-DQN RCT (3-step)": 4504.686218986673,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-LSTM RCT (3-step)": 472.7263612478363,
+        "ProCause LSTM-DQN RCT (3-step)": 5192.3823396498765,
         "Random": 219.4117088322532
       }
     },
@@ -2230,15 +2230,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-LSTM RCT (3-step)": {
-        "mean": 1019.5982465133347,
-        "std": 367.4670198234544,
+      "ProCause LSTM-DQN RCT (3-step)": {
+        "mean": 4750.252599030964,
+        "std": 269.79429510754994,
         "per_seed": [
-          969.9435711916974,
-          1310.0640627788575,
-          1520.7798987151393,
-          824.4773386331432,
-          472.7263612478363
+          4468.425417432,
+          4680.853857623125,
+          4904.915161463143,
+          4504.686218986673,
+          5192.3823396498765
         ]
       }
     }
@@ -2247,31 +2247,31 @@
     "method": "procause_lstm",
     "suffix": "CONF",
     "steps": 1,
-    "method_label": "ProCause-LSTM CONF (1-step)",
+    "method_label": "ProCause LSTM-DQN CONF (1-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-LSTM CONF (1-step)": 576.550339403183,
+        "ProCause LSTM-DQN CONF (1-step)": 604.1766494338592,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-LSTM CONF (1-step)": 565.4056946578697,
+        "ProCause LSTM-DQN CONF (1-step)": 656.4145107354242,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-LSTM CONF (1-step)": 630.696948493252,
+        "ProCause LSTM-DQN CONF (1-step)": 696.1112648722669,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-LSTM CONF (1-step)": 590.5474372793171,
+        "ProCause LSTM-DQN CONF (1-step)": 623.2556738469578,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-LSTM CONF (1-step)": 835.8732239955565,
+        "ProCause LSTM-DQN CONF (1-step)": 846.7439292304915,
         "Random": 219.4117088322532
       }
     },
@@ -2298,15 +2298,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-LSTM CONF (1-step)": {
-        "mean": 639.8147287658356,
-        "std": 100.48723381362323,
+      "ProCause LSTM-DQN CONF (1-step)": {
+        "mean": 685.3404056237999,
+        "std": 86.54003174873702,
         "per_seed": [
-          576.550339403183,
-          565.4056946578697,
-          630.696948493252,
-          590.5474372793171,
-          835.8732239955565
+          604.1766494338592,
+          656.4145107354242,
+          696.1112648722669,
+          623.2556738469578,
+          846.7439292304915
         ]
       }
     }
@@ -2315,31 +2315,31 @@
     "method": "procause_lstm",
     "suffix": "CONF",
     "steps": 2,
-    "method_label": "ProCause-LSTM CONF (2-step)",
+    "method_label": "ProCause LSTM-DQN CONF (2-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-LSTM CONF (2-step)": 1031.6488573024974,
+        "ProCause LSTM-DQN CONF (2-step)": 1671.3553683128166,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-LSTM CONF (2-step)": 1286.4718641055035,
+        "ProCause LSTM-DQN CONF (2-step)": 1876.672649891513,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-LSTM CONF (2-step)": 2321.8658451074975,
+        "ProCause LSTM-DQN CONF (2-step)": 1880.5672512621634,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-LSTM CONF (2-step)": 2165.7158043098434,
+        "ProCause LSTM-DQN CONF (2-step)": 1815.2298021663448,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-LSTM CONF (2-step)": 2640.8815156751807,
+        "ProCause LSTM-DQN CONF (2-step)": 2004.792063650871,
         "Random": 219.4117088322532
       }
     },
@@ -2366,15 +2366,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-LSTM CONF (2-step)": {
-        "mean": 1889.3167773001046,
-        "std": 620.8640631441635,
+      "ProCause LSTM-DQN CONF (2-step)": {
+        "mean": 1849.7234270567417,
+        "std": 108.37791167607072,
         "per_seed": [
-          1031.6488573024974,
-          1286.4718641055035,
-          2321.8658451074975,
-          2165.7158043098434,
-          2640.8815156751807
+          1671.3553683128166,
+          1876.672649891513,
+          1880.5672512621634,
+          1815.2298021663448,
+          2004.792063650871
         ]
       }
     }
@@ -2383,31 +2383,31 @@
     "method": "procause_lstm",
     "suffix": "CONF",
     "steps": 3,
-    "method_label": "ProCause-LSTM CONF (3-step)",
+    "method_label": "ProCause LSTM-DQN CONF (3-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-LSTM CONF (3-step)": 3545.419126226236,
+        "ProCause LSTM-DQN CONF (3-step)": 4086.5867238177852,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-LSTM CONF (3-step)": 3508.4883459121083,
+        "ProCause LSTM-DQN CONF (3-step)": 3942.5777062894067,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-LSTM CONF (3-step)": 3806.466360294834,
+        "ProCause LSTM-DQN CONF (3-step)": 4313.163968609101,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-LSTM CONF (3-step)": 3263.0282970520993,
+        "ProCause LSTM-DQN CONF (3-step)": 4245.203777997198,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-LSTM CONF (3-step)": 4813.271974864904,
+        "ProCause LSTM-DQN CONF (3-step)": 4174.379118094153,
         "Random": 219.4117088322532
       }
     },
@@ -2434,15 +2434,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-LSTM CONF (3-step)": {
-        "mean": 3787.3348208700363,
-        "std": 541.1264086287705,
+      "ProCause LSTM-DQN CONF (3-step)": {
+        "mean": 4152.382258961528,
+        "std": 129.0716522957591,
         "per_seed": [
-          3545.419126226236,
-          3508.4883459121083,
-          3806.466360294834,
-          3263.0282970520993,
-          4813.271974864904
+          4086.5867238177852,
+          3942.5777062894067,
+          4313.163968609101,
+          4245.203777997198,
+          4174.379118094153
         ]
       }
     }
@@ -2451,31 +2451,31 @@
     "method": "procause_econml",
     "suffix": "RCT",
     "steps": 1,
-    "method_label": "ProCause-EconML RCT (1-step)",
+    "method_label": "ProCause EconML-DQN RCT (1-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-EconML RCT (1-step)": -285.2765157211813,
+        "ProCause EconML-DQN RCT (1-step)": -336.7920458240454,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-EconML RCT (1-step)": -81.9561505452691,
+        "ProCause EconML-DQN RCT (1-step)": 35.42739702316873,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-EconML RCT (1-step)": -171.35875198844548,
+        "ProCause EconML-DQN RCT (1-step)": -74.62552118474011,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-EconML RCT (1-step)": -387.2353506058308,
+        "ProCause EconML-DQN RCT (1-step)": -468.0987851691748,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-EconML RCT (1-step)": -51.90807867349024,
+        "ProCause EconML-DQN RCT (1-step)": 315.9639213238457,
         "Random": 219.4117088322532
       }
     },
@@ -2502,15 +2502,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-EconML RCT (1-step)": {
-        "mean": -195.54696950684337,
-        "std": 125.63112822154869,
+      "ProCause EconML-DQN RCT (1-step)": {
+        "mean": -105.62500676618916,
+        "std": 276.9185486693473,
         "per_seed": [
-          -285.2765157211813,
-          -81.9561505452691,
-          -171.35875198844548,
-          -387.2353506058308,
-          -51.90807867349024
+          -336.7920458240454,
+          35.42739702316873,
+          -74.62552118474011,
+          -468.0987851691748,
+          315.9639213238457
         ]
       }
     }
@@ -2519,31 +2519,31 @@
     "method": "procause_econml",
     "suffix": "RCT",
     "steps": 2,
-    "method_label": "ProCause-EconML RCT (2-step)",
+    "method_label": "ProCause EconML-DQN RCT (2-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-EconML RCT (2-step)": -285.2765157211813,
+        "ProCause EconML-DQN RCT (2-step)": 2039.5130486811358,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-EconML RCT (2-step)": -81.9561505452691,
+        "ProCause EconML-DQN RCT (2-step)": 2239.2085605851858,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-EconML RCT (2-step)": -171.35875198844548,
+        "ProCause EconML-DQN RCT (2-step)": 2248.447774946009,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-EconML RCT (2-step)": -387.2353506058308,
+        "ProCause EconML-DQN RCT (2-step)": 2220.0245447728357,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-EconML RCT (2-step)": -51.90807867349024,
+        "ProCause EconML-DQN RCT (2-step)": 2573.8338658184125,
         "Random": 219.4117088322532
       }
     },
@@ -2570,15 +2570,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-EconML RCT (2-step)": {
-        "mean": -195.54696950684337,
-        "std": 125.63112822154869,
+      "ProCause EconML-DQN RCT (2-step)": {
+        "mean": 2264.205558960716,
+        "std": 172.73189183402886,
         "per_seed": [
-          -285.2765157211813,
-          -81.9561505452691,
-          -171.35875198844548,
-          -387.2353506058308,
-          -51.90807867349024
+          2039.5130486811358,
+          2239.2085605851858,
+          2248.447774946009,
+          2220.0245447728357,
+          2573.8338658184125
         ]
       }
     }
@@ -2587,31 +2587,31 @@
     "method": "procause_econml",
     "suffix": "RCT",
     "steps": 3,
-    "method_label": "ProCause-EconML RCT (3-step)",
+    "method_label": "ProCause EconML-DQN RCT (3-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-EconML RCT (3-step)": 393.48887585282534,
+        "ProCause EconML-DQN RCT (3-step)": 4565.356413338419,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-EconML RCT (3-step)": 811.3156920791553,
+        "ProCause EconML-DQN RCT (3-step)": 4494.039983458305,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-EconML RCT (3-step)": 723.967714088324,
+        "ProCause EconML-DQN RCT (3-step)": 4884.133150116409,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-EconML RCT (3-step)": 433.54187279455874,
+        "ProCause EconML-DQN RCT (3-step)": 4512.472002798619,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-EconML RCT (3-step)": 1067.9024320329167,
+        "ProCause EconML-DQN RCT (3-step)": 5076.320831446562,
         "Random": 219.4117088322532
       }
     },
@@ -2638,15 +2638,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-EconML RCT (3-step)": {
-        "mean": 686.0433173695561,
-        "std": 249.91714304824188,
+      "ProCause EconML-DQN RCT (3-step)": {
+        "mean": 4706.464476231663,
+        "std": 232.82122388862496,
         "per_seed": [
-          393.48887585282534,
-          811.3156920791553,
-          723.967714088324,
-          433.54187279455874,
-          1067.9024320329167
+          4565.356413338419,
+          4494.039983458305,
+          4884.133150116409,
+          4512.472002798619,
+          5076.320831446562
         ]
       }
     }
@@ -2655,31 +2655,31 @@
     "method": "procause_econml",
     "suffix": "CONF",
     "steps": 1,
-    "method_label": "ProCause-EconML CONF (1-step)",
+    "method_label": "ProCause EconML-DQN CONF (1-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-EconML CONF (1-step)": 606.6807558308359,
+        "ProCause EconML-DQN CONF (1-step)": 564.744379629984,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-EconML CONF (1-step)": 674.5528260718532,
+        "ProCause EconML-DQN CONF (1-step)": 662.6490624045658,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-EconML CONF (1-step)": 718.1195032413744,
+        "ProCause EconML-DQN CONF (1-step)": 765.8154067936134,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-EconML CONF (1-step)": 684.436685547383,
+        "ProCause EconML-DQN CONF (1-step)": 621.9846793592053,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-EconML CONF (1-step)": 908.1076176128051,
+        "ProCause EconML-DQN CONF (1-step)": 915.121807260254,
         "Random": 219.4117088322532
       }
     },
@@ -2706,15 +2706,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-EconML CONF (1-step)": {
-        "mean": 718.3794776608504,
-        "std": 101.53455339021065,
+      "ProCause EconML-DQN CONF (1-step)": {
+        "mean": 706.0630670895246,
+        "std": 123.45106030592706,
         "per_seed": [
-          606.6807558308359,
-          674.5528260718532,
-          718.1195032413744,
-          684.436685547383,
-          908.1076176128051
+          564.744379629984,
+          662.6490624045658,
+          765.8154067936134,
+          621.9846793592053,
+          915.121807260254
         ]
       }
     }
@@ -2723,31 +2723,31 @@
     "method": "procause_econml",
     "suffix": "CONF",
     "steps": 2,
-    "method_label": "ProCause-EconML CONF (2-step)",
+    "method_label": "ProCause EconML-DQN CONF (2-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-EconML CONF (2-step)": 1957.2444526356105,
+        "ProCause EconML-DQN CONF (2-step)": 1756.9516009741737,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-EconML CONF (2-step)": 2119.39138438593,
+        "ProCause EconML-DQN CONF (2-step)": 1878.683685498799,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-EconML CONF (2-step)": 2070.8997359148407,
+        "ProCause EconML-DQN CONF (2-step)": 1804.6650365025607,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-EconML CONF (2-step)": 1858.2000803004992,
+        "ProCause EconML-DQN CONF (2-step)": 1804.218988925637,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-EconML CONF (2-step)": 2378.6671503286084,
+        "ProCause EconML-DQN CONF (2-step)": 2078.0540399859387,
         "Random": 219.4117088322532
       }
     },
@@ -2774,15 +2774,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-EconML CONF (2-step)": {
-        "mean": 2076.8805607130976,
-        "std": 176.09772112993616,
+      "ProCause EconML-DQN CONF (2-step)": {
+        "mean": 1864.514670377422,
+        "std": 113.654903227666,
         "per_seed": [
-          1957.2444526356105,
-          2119.39138438593,
-          2070.8997359148407,
-          1858.2000803004992,
-          2378.6671503286084
+          1756.9516009741737,
+          1878.683685498799,
+          1804.6650365025607,
+          1804.218988925637,
+          2078.0540399859387
         ]
       }
     }
@@ -2791,31 +2791,31 @@
     "method": "procause_econml",
     "suffix": "CONF",
     "steps": 3,
-    "method_label": "ProCause-EconML CONF (3-step)",
+    "method_label": "ProCause EconML-DQN CONF (3-step)",
     "per_seed": {
       "42": {
         "Bank": 373.89781898111585,
-        "ProCause-EconML CONF (3-step)": 4156.413587037292,
+        "ProCause EconML-DQN CONF (3-step)": 4162.178251717678,
         "Random": -297.40041275654664
       },
       "123": {
         "Bank": 405.2357888595203,
-        "ProCause-EconML CONF (3-step)": 4014.633457132864,
+        "ProCause EconML-DQN CONF (3-step)": 4077.859028898063,
         "Random": -136.7285155860359
       },
       "456": {
         "Bank": 384.4142305446462,
-        "ProCause-EconML CONF (3-step)": 4307.858823574807,
+        "ProCause EconML-DQN CONF (3-step)": 4287.279434696207,
         "Random": -21.168161700750286
       },
       "789": {
         "Bank": 432.21493399325607,
-        "ProCause-EconML CONF (3-step)": 3997.31608362305,
+        "ProCause EconML-DQN CONF (3-step)": 4023.768060083276,
         "Random": -242.02802134956076
       },
       "1024": {
         "Bank": 595.436543345317,
-        "ProCause-EconML CONF (3-step)": 4497.125632391491,
+        "ProCause EconML-DQN CONF (3-step)": 4677.914687054545,
         "Random": 219.4117088322532
       }
     },
@@ -2842,15 +2842,15 @@
           219.4117088322532
         ]
       },
-      "ProCause-EconML CONF (3-step)": {
-        "mean": 4194.669516751901,
-        "std": 188.21073165792728,
+      "ProCause EconML-DQN CONF (3-step)": {
+        "mean": 4245.799892489954,
+        "std": 233.64014859374814,
         "per_seed": [
-          4156.413587037292,
-          4014.633457132864,
-          4307.858823574807,
-          3997.31608362305,
-          4497.125632391491
+          4162.178251717678,
+          4077.859028898063,
+          4287.279434696207,
+          4023.768060083276,
+          4677.914687054545
         ]
       }
     }
