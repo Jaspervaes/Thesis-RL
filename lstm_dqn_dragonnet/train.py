@@ -1,4 +1,4 @@
-"""Train ProCause LSTM: S-learner (causal rewards) + LSTM-DQN (backward TD)."""
+"""Train LSTM-DQN-DragonNet: LSTM-DragonNet causal S-learner (causal rewards) + LSTM-DQN (backward TD)."""
 import sys
 import os
 import argparse
@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(script_dir))
+project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
@@ -25,32 +25,55 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: S-learner  (prefix, action) -> outcome
+# Phase 1: LSTM-DragonNet  (prefix, action) -> outcome + propensity
 # ---------------------------------------------------------------------------
 
-class LSTM_SLearner(nn.Module):
-    """LSTM encoder with action embedding for outcome prediction."""
+class LSTM_DragonNet(nn.Module):
+    """Shared LSTM encoder Φ + per-action outcome heads + propensity head (DragonNet)."""
 
-    def __init__(self, n_activities, n_features, n_actions, emb_dim=32, action_emb_dim=16,
-                 hidden=128, n_layers=2, dropout=0.2):
+    def __init__(self, n_activities, n_features, n_actions,
+                 emb_dim=32, hidden=128, n_layers=2, dropout=0.2):
         super().__init__()
         self.n_actions = n_actions
+        self.hidden    = hidden
         self.emb  = nn.Embedding(n_activities, emb_dim, padding_idx=0)
         self.lstm = nn.LSTM(emb_dim + n_features, hidden, n_layers,
-                            batch_first=True, dropout=dropout if n_layers > 1 else 0)
-        self.action_emb = nn.Embedding(n_actions, action_emb_dim)
-        self.head = nn.Sequential(
-            nn.Linear(hidden + action_emb_dim, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, 1),
+                            batch_first=True,
+                            dropout=dropout if n_layers > 1 else 0)
+        # Per-action outcome heads — one per possible action for this intervention
+        self.heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden, 64), nn.ReLU(), nn.Dropout(dropout),
+                nn.Linear(64, 1),
+            )
+            for _ in range(n_actions)
+        ])
+        # Propensity head — predicts which action was taken (behaviour policy)
+        self.prop_head = nn.Sequential(
+            nn.Linear(hidden, 64), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(64, n_actions),
         )
+        # Targeted regularisation scalar (one per model, learned)
+        self.eps = nn.Parameter(torch.zeros(1))
+
+    def encode(self, acts, feats, lens):
+        x = torch.cat([self.emb(acts), feats], dim=-1)
+        packed = nn.utils.rnn.pack_padded_sequence(
+            x, lens.cpu(), batch_first=True, enforce_sorted=False)
+        _, (h, _) = self.lstm(packed)
+        return h[-1]                                  # (B, hidden)
 
     def forward(self, acts, feats, lens, actions):
-        x = torch.cat([self.emb(acts), feats], dim=-1)
-        packed = nn.utils.rnn.pack_padded_sequence(x, lens.cpu(), batch_first=True, enforce_sorted=False)
-        _, (h, _) = self.lstm(packed)
-        h_last = h[-1]
-        a_emb = self.action_emb(actions)
-        return self.head(torch.cat([h_last, a_emb], dim=-1)).squeeze(-1)
+        r = self.encode(acts, feats, lens)            # (B, hidden)
+        # Factual outcome predictions (observed action only)
+        preds = torch.zeros(r.size(0), device=r.device)
+        for a in range(self.n_actions):
+            mask = (actions == a)
+            if mask.any():
+                preds[mask] = self.heads[a](r[mask]).squeeze(-1)
+        # Propensity logits over all actions
+        prop_logits = self.prop_head(r)               # (B, n_actions)
+        return preds, prop_logits, r
 
 
 class SLearnerDataset(Dataset):
@@ -74,8 +97,8 @@ class SLearnerDataset(Dataset):
         }
 
 
-def train_slearner(model, train_loader, val_loader, args):
-    """Train S-learner with early stopping."""
+def train_dragonnet(model, train_loader, val_loader, args):
+    """Train DragonNet with factual + propensity + targeted losses; early stop on val factual MSE."""
     opt = optim.Adam(model.parameters(), lr=args.slearner_lr, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=5)
     best_val, best_state = float('inf'), copy.deepcopy(model.state_dict())
@@ -85,21 +108,44 @@ def train_slearner(model, train_loader, val_loader, args):
         model.train()
         tl = 0.0
         for b in train_loader:
-            pred = model(b['acts'].to(device), b['feats'].to(device),
-                         b['lens'].squeeze(1), b['action'].squeeze(1).to(device))
-            loss = F.mse_loss(pred, b['outcome'].squeeze(1).to(device))
+            actions = b['action'].squeeze(1).to(device)
+            target  = b['outcome'].squeeze(1).to(device)
+
+            pred, prop_logits, _ = model(
+                b['acts'].to(device), b['feats'].to(device),
+                b['lens'].squeeze(1), actions,
+            )
+
+            factual_loss = F.mse_loss(pred, target)
+
+            propensity_loss = F.cross_entropy(prop_logits, actions)
+
+            # Targeted regularisation: nudge outcome head toward observed outcome
+            # using inverse propensity of the observed action (Shi et al. 2019)
+            prop_scores = torch.softmax(prop_logits, dim=-1)                  # (B, n_actions)
+            obs_prop    = prop_scores.gather(1, actions.unsqueeze(1)).squeeze(1).clamp(min=1e-6)
+            targeted_loss = F.mse_loss(pred + model.eps * (1.0 / obs_prop), target)
+
+            loss = (factual_loss
+                    + args.alpha_prop     * propensity_loss
+                    + args.alpha_targeted * targeted_loss)
+
             opt.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             tl += loss.item()
 
+        # Early-stopping criterion: validation factual MSE only
         model.eval()
         vl = 0.0
         with torch.no_grad():
             for b in val_loader:
-                pred = model(b['acts'].to(device), b['feats'].to(device),
-                             b['lens'].squeeze(1), b['action'].squeeze(1).to(device))
+                actions = b['action'].squeeze(1).to(device)
+                pred, _, _ = model(
+                    b['acts'].to(device), b['feats'].to(device),
+                    b['lens'].squeeze(1), actions,
+                )
                 vl += F.mse_loss(pred, b['outcome'].squeeze(1).to(device)).item()
         vl /= max(len(val_loader), 1)
         scheduler.step(vl)
@@ -119,20 +165,22 @@ def train_slearner(model, train_loader, val_loader, args):
     return model
 
 
-def predict_outcomes(slearner, acts, feats, lens, actions, batch_size=1024):
-    """Predict outcomes for given (prefix, action) pairs in batches."""
-    slearner.eval()
+def predict_outcomes(dragonnet, acts, feats, lens, actions, batch_size=1024):
+    """Predict factual outcomes for given (prefix, action) pairs in batches.
+    Only the outcome head predictions are used; propensity outputs are discarded."""
+    dragonnet.eval()
     n = len(lens)
     preds = np.zeros(n, dtype=np.float32)
 
     with torch.no_grad():
         for start in range(0, n, batch_size):
             end = min(start + batch_size, n)
-            acts_t = torch.LongTensor(acts[start:end]).to(device)
-            feats_t = torch.FloatTensor(feats[start:end]).to(device)
-            lens_t = torch.LongTensor(lens[start:end])
+            acts_t   = torch.LongTensor(acts[start:end]).to(device)
+            feats_t  = torch.FloatTensor(feats[start:end]).to(device)
+            lens_t   = torch.LongTensor(lens[start:end])
             action_t = torch.LongTensor(actions[start:end]).to(device)
-            preds[start:end] = slearner(acts_t, feats_t, lens_t, action_t).cpu().numpy()
+            out, _, _ = dragonnet(acts_t, feats_t, lens_t, action_t)
+            preds[start:end] = out.cpu().numpy()
 
     return preds
 
@@ -247,10 +295,11 @@ def main():
     parser.add_argument('--patience',       type=int,   default=15)
     parser.add_argument('--es_delta',       type=float, default=1e-4)
     parser.add_argument('--steps',          type=int,   default=3, choices=[1, 2, 3])
-    # S-learner hyperparams
+    # DragonNet hyperparams
     parser.add_argument('--slearner_epochs', type=int,  default=150)
     parser.add_argument('--slearner_lr',    type=float, default=1e-3)
-    parser.add_argument('--action_emb_dim', type=int,   default=16)
+    parser.add_argument('--alpha_prop',     type=float, default=1.0)
+    parser.add_argument('--alpha_targeted', type=float, default=1.0)
     # DQN hyperparams
     parser.add_argument('--dqn_epochs',     type=int,   default=50)
     parser.add_argument('--dqn_lr',         type=float, default=1e-3)
@@ -269,9 +318,9 @@ def main():
     torch.use_deterministic_algorithms(True, warn_only=True)
 
     suffix = "CONF" if args.confounded else "RCT"
-    base   = f"data/procause_lstm_{suffix}_{args.n_cases}"
+    base   = f"data/lstm_dqn_dragonnet_{suffix}_{args.n_cases}"
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
-    print(f"Training ProCause LSTM (S-learner + DQN) — {suffix} | steps={args.steps}")
+    print(f"Training LSTM-DQN-DragonNet — {suffix} | steps={args.steps}")
 
     df_train = load_pickle(f"{base}_trans_train{step_tag}.pkl")
     df_val   = load_pickle(f"{base}_trans_val{step_tag}.pkl")
@@ -290,20 +339,21 @@ def main():
     print(f"Outcome stats: mean={outcome_mean:.1f}, std={outcome_std:.1f}")
 
     cfg = {
-        'n_activities': n_activities,
-        'n_features':   len(FEATURE_COLS),
-        'feature_cols': FEATURE_COLS,
+        'n_activities':  n_activities,
+        'n_features':    len(FEATURE_COLS),
+        'feature_cols':  FEATURE_COLS,
         'activity_to_idx': activity_to_idx,
-        'feat_means':   feat_means,
-        'feat_stds':    feat_stds,
-        'max_len':      max_len,
-        'emb_dim':      args.emb_dim,
-        'hidden':       args.hidden,
-        'n_layers':     args.n_layers,
-        'dropout':      args.dropout,
-        'n_actions':    N_ACTIONS,
-        'steps':        args.steps,
-        'action_emb_dim': args.action_emb_dim,
+        'feat_means':    feat_means,
+        'feat_stds':     feat_stds,
+        'max_len':       max_len,
+        'emb_dim':       args.emb_dim,
+        'hidden':        args.hidden,
+        'n_layers':      args.n_layers,
+        'dropout':       args.dropout,
+        'n_actions':     N_ACTIONS,
+        'steps':         args.steps,
+        'alpha_prop':    args.alpha_prop,
+        'alpha_targeted': args.alpha_targeted,
     }
 
     save_dict = {'config': cfg}
@@ -311,10 +361,10 @@ def main():
     slearners = {}
 
     # ===================================================================
-    # Phase 1: Train S-learner per intervention
+    # Phase 1: Train DragonNet per intervention
     # ===================================================================
     print(f"\n{'='*50}")
-    print("Phase 1: Training S-learners")
+    print("Phase 1: Training DragonNets")
     print('='*50)
 
     for int_idx in active_interventions:
@@ -342,10 +392,11 @@ def main():
         tr_outcomes_norm = [(o - outcome_mean) / outcome_std for o in sub_train['case_outcome'].tolist()]
         va_outcomes_norm = [(o - outcome_mean) / outcome_std for o in sub_val['case_outcome'].tolist()]
 
-        print(f"\n[S-learner Int.{int_idx}]")
-        slearner = LSTM_SLearner(n_activities, len(FEATURE_COLS), n_act,
-                                 args.emb_dim, args.action_emb_dim, args.hidden,
-                                 args.n_layers, args.dropout).to(device)
+        print(f"\n[DragonNet Int.{int_idx}]")
+        dragonnet = LSTM_DragonNet(
+            n_activities, len(FEATURE_COLS), n_act,
+            args.emb_dim, args.hidden, args.n_layers, args.dropout,
+        ).to(device)
 
         tr_sl_ds = SLearnerDataset(tr_acts, tr_feats, tr_lens,
                                    sub_train['action'].tolist(), tr_outcomes_norm)
@@ -357,12 +408,15 @@ def main():
                                   worker_init_fn=seed_worker, generator=g)
         va_sl_loader = DataLoader(va_sl_ds, batch_size=args.batch_size, shuffle=False)
 
-        slearner = train_slearner(slearner, tr_sl_loader, va_sl_loader, args)
-        slearners[int_idx] = slearner
-        save_dict[f'S{int_idx+1}'] = slearner.state_dict()
+        dragonnet = train_dragonnet(dragonnet, tr_sl_loader, va_sl_loader, args)
+        slearners[int_idx] = dragonnet
+        save_dict[f'dragonnet_{int_idx+1}'] = dragonnet.state_dict()
 
     # ===================================================================
-    # Phase 2: Compute causal rewards using S-learners
+    # Phase 2: Compute causal rewards using DragonNet outcome heads
+    # Only the 'reward' column at terminal transitions is replaced;
+    # non-terminal rewards stay 0.0. Causal rewards then feed Phase 3 DQN.
+    # Propensity head and targeted regularizer are not used here.
     # ===================================================================
     print(f"\n{'='*50}")
     print("Phase 2: Computing causal rewards")
@@ -494,7 +548,7 @@ def main():
         save_dict.update({'Q1': Q1.state_dict(), 'Q2': Q2.state_dict(), 'Q3': Q3.state_dict()})
 
     os.makedirs("models", exist_ok=True)
-    model_path = f"models/procause_lstm_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pth"
+    model_path = f"models/lstm_dqn_dragonnet_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pth"
     torch.save(save_dict, model_path)
     print(f"\n[OK] {model_path}")
 

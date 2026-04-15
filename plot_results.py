@@ -29,16 +29,19 @@ from matplotlib.lines import Line2D
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # ── Style ─────────────────────────────────────────────────────────────────────
-METHODS   = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL', 'procause_lstm', 'procause_econml']
+METHODS   = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL',
+             'procause_lstm', 'procause_econml', 'lstm_dqn_dragonnet', 'lstm_dqn_tabpfn']
 METHOD_LABELS = {
     'kmeans': 'K-Means', 'lstm': 'LSTM-DQN', 'rims': 'RIMS-DQN',
     'multiModelCQL': 'CQL-MN', 'singleModelCQL': 'CQL-SN',
     'procause_lstm': 'ProCause LSTM-DQN', 'procause_econml': 'ProCause EconML-DQN',
+    'lstm_dqn_dragonnet': 'LSTM-DQN-DragonNet', 'lstm_dqn_tabpfn': 'LSTM-DQN-TabPFN',
 }
 COLORS    = {
     'kmeans': '#2196F3', 'lstm': '#FF9800', 'rims': '#4CAF50',
     'multiModelCQL': '#9C27B0', 'singleModelCQL': '#F44336',
     'procause_lstm': '#E91E63', 'procause_econml': '#009688',
+    'lstm_dqn_dragonnet': '#00838F', 'lstm_dqn_tabpfn': '#AD1457',
 }
 STEP_LABELS = {1: '1-step\n(Int. 0)', 2: '2-step\n(Int. 0–1)', 3: '3-step\n(Int. 0–2)'}
 SUFFIX_STYLES = {'RCT': '-', 'CONF': '--'}
@@ -461,10 +464,12 @@ def fig6_incremental_gain(results, out_dir, suffixes):
 
 # Pairs: baseline method → ProCause variant(s) that use it as RL backbone
 PROCAUSE_PAIRS = {
-    'lstm': ['procause_lstm', 'procause_econml'],
+    'lstm': ['procause_lstm', 'procause_econml', 'lstm_dqn_dragonnet', 'lstm_dqn_tabpfn'],
 }
-PAIR_HATCHES = {'procause_lstm': '', 'procause_econml': '///'}
-PAIR_LABELS_SUFFIX = {'procause_lstm': '+ ProCause-LSTM', 'procause_econml': '+ ProCause-EconML'}
+PAIR_HATCHES = {'procause_lstm': '', 'procause_econml': '///',
+                'lstm_dqn_dragonnet': 'xx', 'lstm_dqn_tabpfn': '..'}
+PAIR_LABELS_SUFFIX = {'procause_lstm': '+ ProCause-LSTM', 'procause_econml': '+ ProCause-EconML',
+                      'lstm_dqn_dragonnet': '+ DragonNet', 'lstm_dqn_tabpfn': '+ TabPFN'}
 
 
 def fig7_dqn_vs_procause(results, out_dir, suffixes):
@@ -476,12 +481,14 @@ def fig7_dqn_vs_procause(results, out_dir, suffixes):
 
     for ax, suffix in zip(axes, suffixes):
         steps_list = [1, 2, 3]
-        # For each step: bars for lstm, procause_lstm, procause_econml
-        group_methods = ['lstm', 'procause_lstm', 'procause_econml']
-        bar_labels = ['LSTM-DQN', 'ProCause\nLSTM-DQN', 'ProCause\nEconML-DQN']
-        bar_colors = [COLORS['lstm'], COLORS['procause_lstm'], COLORS['procause_econml']]
-        n_bars = len(group_methods)
-        width = 0.22
+        # Keep this list in sync with METHODS — only includes methods present in results
+        candidate_methods = ['lstm', 'procause_lstm', 'procause_econml', 'lstm_dqn_dragonnet', 'lstm_dqn_tabpfn']
+        group_methods = [m for m in candidate_methods
+                         if any(get_agg(results, m, suffix, s) is not None for s in steps_list)]
+        bar_labels = [METHOD_LABELS[m].replace(' ', '\n') for m in group_methods]
+        bar_colors = [COLORS[m] for m in group_methods]
+        n_bars = max(len(group_methods), 1)
+        width = 0.8 / n_bars
 
         x = np.arange(len(steps_list))
 
@@ -585,10 +592,20 @@ def fig8_confounding_robustness(results, out_dir):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    global METHODS
     parser = argparse.ArgumentParser()
     parser.add_argument('--results', type=str, default='results/all_results.json')
     parser.add_argument('--out',     type=str, default='results/figures')
+    parser.add_argument('--methods', nargs='+', default=None,
+                        help='Subset of methods to render (defaults to all known methods).')
     args = parser.parse_args()
+
+    if args.methods:
+        unknown = [m for m in args.methods if m not in METHOD_LABELS]
+        if unknown:
+            print(f"[ERROR] Unknown methods: {unknown}. Known: {list(METHOD_LABELS)}")
+            sys.exit(1)
+        METHODS = [m for m in METHODS if m in args.methods]
 
     results_path = os.path.join(script_dir, args.results)
     if not os.path.exists(results_path):

@@ -1,11 +1,11 @@
-"""Evaluate ProCause LSTM (DQN with causal rewards) against bank and random baselines."""
+"""Evaluate LSTM-DQN-TabPFN (DQN with causal rewards from TabPFN S-learner) against baselines."""
 import sys
 import os
 import argparse
 import torch
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(script_dir))
+project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
@@ -18,8 +18,8 @@ from shared import (
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class ProCauseLSTMPolicy:
-    """ProCause policy: DQN trained with causal rewards from S-learner."""
+class LSTMDQNTabPFNPolicy:
+    """LSTM-DQN-TabPFN policy: DQN trained with causal rewards from TabPFN S-learner."""
 
     def __init__(self, models, cfg, steps=3):
         self.models = models
@@ -51,7 +51,7 @@ def main():
 
     suffix = "CONF" if args.confounded else "RCT"
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
-    ckpt   = torch.load(f"models/procause_lstm_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth",
+    ckpt   = torch.load(f"models/lstm_dqn_tabpfn_{suffix}_{args.n_cases}_s{args.train_seed}{step_tag}.pth",
                         map_location=device, weights_only=False)
     cfg    = ckpt['config']
     params = load_pickle(f"data/simbank_{suffix}_{args.n_cases}_params.pkl")
@@ -70,10 +70,10 @@ def main():
     if args.steps >= 3:
         models[2] = load_net('Q3', N_ACTIONS[2])
 
-    policy = ProCauseLSTMPolicy(models, cfg, steps=args.steps)
-    label  = f'ProCause LSTM-DQN {suffix} ({args.steps}-step)'
+    policy = LSTMDQNTabPFNPolicy(models, cfg, steps=args.steps)
+    label  = f'LSTM-DQN-TabPFN {suffix} ({args.steps}-step)'
 
-    print(f"Evaluating ProCause LSTM — {suffix} | steps={args.steps}")
+    print(f"Evaluating LSTM-DQN-TabPFN — {suffix} | steps={args.steps}")
     bank_res   = evaluate_policy(bank_policy,   args.n_episodes, params, args.seed)
     random_res = evaluate_policy(random_policy, args.n_episodes, params, args.seed)
     pc_res     = evaluate_policy(policy, args.n_episodes, params, args.seed,
@@ -84,7 +84,7 @@ def main():
     print_action_dist(results)
 
     gain = ((pc_res['avg'] / bank_res['avg']) - 1) * 100
-    print(f"\nProCause LSTM-DQN {'beats' if gain > 0 else 'underperforms'} Bank by {gain:+.1f}%")
+    print(f"\nLSTM-DQN-TabPFN {'beats' if gain > 0 else 'underperforms'} Bank by {gain:+.1f}%")
 
     if args.results_file:
         import json

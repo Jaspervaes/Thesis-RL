@@ -21,7 +21,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
 SEEDS = [42, 123, 456, 789, 1024]
-ALL_METHODS = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL', 'procause_lstm', 'procause_econml']
+ALL_METHODS = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL', 'lstm_dqn_dragonnet', 'lstm_dqn_tabpfn']
 ALL_STEPS   = [1, 2, 3]
 
 METHOD_SCRIPTS = {
@@ -55,17 +55,17 @@ METHOD_SCRIPTS = {
         'train':    'singleModelCQL/train.py',
         'evaluate': 'singleModelCQL/evaluate.py',
     },
-    'procause_lstm': {
-        'generate': 'procause/lstm_slearner/generate_data.py',
-        'convert':  'procause/lstm_slearner/convert_data.py',
-        'train':    'procause/lstm_slearner/train.py',
-        'evaluate': 'procause/lstm_slearner/evaluate.py',
+    'lstm_dqn_dragonnet': {
+        'generate': 'lstm_dqn_dragonnet/generate_data.py',
+        'convert':  'lstm_dqn_dragonnet/convert_data.py',
+        'train':    'lstm_dqn_dragonnet/train.py',
+        'evaluate': 'lstm_dqn_dragonnet/evaluate.py',
     },
-    'procause_econml': {
-        'generate': 'procause/econml_slearner/generate_data.py',
-        'convert':  'procause/econml_slearner/convert_data.py',
-        'train':    'procause/econml_slearner/train.py',
-        'evaluate': 'procause/econml_slearner/evaluate.py',
+    'lstm_dqn_tabpfn': {
+        'generate': 'lstm_dqn_tabpfn/generate_data.py',
+        'convert':  'lstm_dqn_tabpfn/convert_data.py',
+        'train':    'lstm_dqn_tabpfn/train.py',
+        'evaluate': 'lstm_dqn_tabpfn/evaluate.py',
     },
 }
 
@@ -76,8 +76,8 @@ FILE_PREFIX = {
     'rims':         'rims',
     'multiModelCQL':  'multi_cql',
     'singleModelCQL': 'single_cql',
-    'procause_lstm':    'procause_lstm',
-    'procause_econml':  'procause_econml',
+    'lstm_dqn_dragonnet':  'lstm_dqn_dragonnet',
+    'lstm_dqn_tabpfn':  'lstm_dqn_tabpfn',
 }
 
 

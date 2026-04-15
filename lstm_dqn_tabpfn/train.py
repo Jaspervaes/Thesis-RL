@@ -1,4 +1,4 @@
-"""Train ProCause EconML: GBR S-learner (causal rewards) + LSTM-DQN (backward TD)."""
+"""Train LSTM-DQN-TabPFN: TabPFN causal S-learner (causal rewards) + LSTM-DQN (backward TD)."""
 import sys
 import os
 import argparse
@@ -11,11 +11,11 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from sklearn.ensemble import GradientBoostingRegressor
+from tabpfn import TabPFNRegressor
 from sklearn.preprocessing import StandardScaler
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(script_dir))
+project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
@@ -28,30 +28,37 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: GBR S-learner  (state, action) -> outcome
+# Phase 1: TabPFN S-learner  (state, action) -> outcome
 # ---------------------------------------------------------------------------
 
-def train_econml_slearner(states, actions, outcomes, n_actions):
-    """Train S-learner via GradientBoosting. Returns model, scaler, outcome stats."""
+def train_tabpfn_slearner(states, actions, outcomes, n_actions,
+                          seed, max_samples):
+    """Train S-learner via TabPFNRegressor. Returns model, scaler, outcome stats."""
     state_scaler = StandardScaler()
     states_norm = state_scaler.fit_transform(states)
     outcome_mean, outcome_std = outcomes.mean(), outcomes.std() + 1e-8
     outcomes_norm = (outcomes - outcome_mean) / outcome_std
 
-    X_train = np.column_stack([states_norm, actions.reshape(-1, 1)])
-    model = GradientBoostingRegressor(
-        n_estimators=500, max_depth=5, learning_rate=0.05,
-        subsample=0.8, random_state=42)
-    model.fit(X_train, outcomes_norm)
+    X = np.column_stack([states_norm, actions.reshape(-1, 1)])
+    y = outcomes_norm
 
+    if max_samples is not None and X.shape[0] > max_samples:
+        rng = np.random.default_rng(seed)
+        idx = rng.choice(X.shape[0], size=max_samples, replace=False)
+        print(f"  [tabpfn] subsampling {X.shape[0]} -> {max_samples} (seed={seed})")
+        X, y = X[idx], y[idx]
+
+    model = TabPFNRegressor(device='cuda' if torch.cuda.is_available() else 'cpu',
+                            random_state=seed)
+    model.fit(X, y)
     return model, state_scaler, outcome_mean, outcome_std
 
 
-def predict_with_gbr(gbr_model, state_scaler, states, actions, outcome_mean, outcome_std):
+def predict_with_tabpfn(tabpfn_model, state_scaler, states, actions, outcome_mean, outcome_std):
     """Predict denormalized outcomes for given (state, action) pairs."""
     states_norm = state_scaler.transform(states)
     X = np.column_stack([states_norm, actions.reshape(-1, 1)])
-    preds_norm = gbr_model.predict(X)
+    preds_norm = tabpfn_model.predict(X)
     return preds_norm * outcome_std + outcome_mean
 
 
@@ -162,6 +169,7 @@ def main():
     parser.add_argument('--n_layers',       type=int,   default=2)
     parser.add_argument('--dropout',        type=float, default=0.2)
     parser.add_argument('--seed',           type=int,   default=42)
+    parser.add_argument('--tabpfn_max_samples', type=int, default=10000)
     parser.add_argument('--patience',       type=int,   default=15)
     parser.add_argument('--es_delta',       type=float, default=1e-4)
     parser.add_argument('--steps',          type=int,   default=3, choices=[1, 2, 3])
@@ -183,9 +191,9 @@ def main():
     torch.use_deterministic_algorithms(True, warn_only=True)
 
     suffix = "CONF" if args.confounded else "RCT"
-    base   = f"data/procause_econml_{suffix}_{args.n_cases}"
+    base   = f"data/lstm_dqn_tabpfn_{suffix}_{args.n_cases}"
     step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
-    print(f"Training ProCause EconML (GBR S-learner + DQN) — {suffix} | steps={args.steps}")
+    print(f"Training LSTM-DQN-TabPFN — {suffix} | steps={args.steps}")
 
     df_train = load_pickle(f"{base}_trans_train{step_tag}.pkl")
     df_val   = load_pickle(f"{base}_trans_val{step_tag}.pkl")
@@ -216,13 +224,13 @@ def main():
 
     save_dict = {'config': cfg}
     active_interventions = list(range(args.steps))
-    gbr_models = {}  # {int_idx: (model, scaler, outcome_mean, outcome_std)}
+    tabpfn_models = {}  # {int_idx: (model, scaler, outcome_mean, outcome_std)}
 
     # ===================================================================
-    # Phase 1: Train GBR S-learner per intervention
+    # Phase 1: Train TabPFN S-learner per intervention
     # ===================================================================
     print(f"\n{'='*50}")
-    print("Phase 1: Training GBR S-learners")
+    print("Phase 1: Training TabPFN S-learners")
     print('='*50)
 
     for int_idx in active_interventions:
@@ -244,13 +252,16 @@ def main():
             m = sub_train.loc[mask, 'case_outcome'].mean()
             print(f"  Int.{int_idx} action={a}: n={mask.sum()}, outcome_mean={m:.1f}")
 
-        print(f"\n[GBR S-learner Int.{int_idx}]")
+        print(f"\n[TabPFN S-learner Int.{int_idx}]")
         tr_states = np.stack(sub_train['state'].tolist())
         tr_actions = np.array(sub_train['action'].tolist())
         tr_outcomes = np.array(sub_train['case_outcome'].tolist(), dtype=np.float64)
 
-        gbr_model, state_scaler, outcome_mean, outcome_std = train_econml_slearner(
-            tr_states, tr_actions, tr_outcomes, n_act)
+        tabpfn_model, state_scaler, outcome_mean, outcome_std = train_tabpfn_slearner(
+            tr_states, tr_actions, tr_outcomes, n_act,
+            seed=args.seed + int_idx,
+            max_samples=args.tabpfn_max_samples,
+        )
 
         # Validate
         va_states = np.stack(sub_val['state'].tolist())
@@ -258,19 +269,21 @@ def main():
         val_preds = []
         for a in range(n_act):
             X_val = np.column_stack([va_states_norm, np.full(len(va_states), a)])
-            val_preds.append(gbr_model.predict(X_val) * outcome_std + outcome_mean)
+            val_preds.append(tabpfn_model.predict(X_val) * outcome_std + outcome_mean)
         val_preds = np.stack(val_preds, axis=1)
         print(f"  Val pred means per action: {np.mean(val_preds, axis=0)}")
 
-        gbr_models[int_idx] = (gbr_model, state_scaler, outcome_mean, outcome_std)
-        save_dict[f'gbr_{int_idx}'] = pickle.dumps(gbr_model)
-        save_dict[f'scaler_{int_idx}'] = pickle.dumps(state_scaler)
+        tabpfn_models[int_idx] = (tabpfn_model, state_scaler, outcome_mean, outcome_std)
+        save_dict[f'tabpfn_{int_idx}']       = pickle.dumps(tabpfn_model)
+        save_dict[f'scaler_{int_idx}']       = pickle.dumps(state_scaler)
         save_dict[f'outcome_mean_{int_idx}'] = outcome_mean
-        save_dict[f'outcome_std_{int_idx}'] = outcome_std
-        save_dict[f'n_actions_{int_idx}'] = n_act
+        save_dict[f'outcome_std_{int_idx}']  = outcome_std
+        save_dict[f'n_actions_{int_idx}']    = n_act
 
     # ===================================================================
-    # Phase 2: Compute causal rewards using GBR S-learners
+    # Phase 2: Compute causal rewards using TabPFN S-learners
+    # Only terminal-row rewards are replaced; non-terminal rewards stay 0.0.
+    # These causal rewards feed into Phase 3 LSTM-DQN via the transition tuples.
     # ===================================================================
     print(f"\n{'='*50}")
     print("Phase 2: Computing causal rewards")
@@ -279,7 +292,7 @@ def main():
     df_train_causal = df_train.copy()
     df_val_causal   = df_val.copy()
 
-    for int_idx, (gbr_model, state_scaler, outcome_mean, outcome_std) in gbr_models.items():
+    for int_idx, (tabpfn_model, state_scaler, outcome_mean, outcome_std) in tabpfn_models.items():
         for df_c, label in [(df_train_causal, 'train'), (df_val_causal, 'val')]:
             terminal_mask = (df_c['intervention'] == int_idx) & (df_c['terminal'] == True)
             if not terminal_mask.any():
@@ -289,8 +302,8 @@ def main():
             states = np.stack(sub['state'].tolist())
             actions = np.array(sub['action'].tolist())
 
-            causal_rewards = predict_with_gbr(gbr_model, state_scaler, states, actions,
-                                              outcome_mean, outcome_std)
+            causal_rewards = predict_with_tabpfn(tabpfn_model, state_scaler, states, actions,
+                                                 outcome_mean, outcome_std)
 
             orig_mean = sub['reward'].mean()
             causal_mean = float(np.mean(causal_rewards))
@@ -401,7 +414,7 @@ def main():
         save_dict.update({'Q1': Q1.state_dict(), 'Q2': Q2.state_dict(), 'Q3': Q3.state_dict()})
 
     os.makedirs("models", exist_ok=True)
-    model_path = f"models/procause_econml_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pth"
+    model_path = f"models/lstm_dqn_tabpfn_{suffix}_{args.n_cases}_s{args.seed}{step_tag}.pth"
     torch.save(save_dict, model_path)
     print(f"\n[OK] {model_path}")
 
