@@ -11,14 +11,14 @@ All details are extracted directly from the codebase.
 
 Two fundamentally different state representations are used across methods:
 
-**Prefix-based (sequential) state — LSTM, RIMS, ProCause LSTM:**
+**Prefix-based (sequential) state — LSTM, RIMS, ProCause LSTM, DragonNet (DQN phase):**
 - A variable-length sequence of events from the start of a case up to (not including) the intervention point
 - Each timestep in the sequence has 7 features: 6 continuous features + 1 activity identifier
 - Continuous features (FEATURE_COLS): `amount`, `est_quality`, `unc_quality`, `interest_rate`, `cum_cost`, `elapsed_time`
 - Activity identifier: either integer index (integer encoding) or one-hot vector (onehot encoding)
 - Sequences are padded to `max_len=10` and packed with `pack_padded_sequence` for efficient LSTM processing
 
-**Flat state vector — K-means, CQL (both), ProCause EconML:**
+**Flat state vector — K-means, CQL (both), ProCause EconML, TabPFN (causal phase), DragonNet (causal phase):**
 - Fixed 16-dimensional vector: 5 base features + 11 activity-count features
 - Base features (5): `amount`, `est_quality`, `unc_quality`, `interest_rate`, `cum_cost`
 - Activity counts (11): cumulative occurrence count for each of the 11 tracked activities up to the intervention point
@@ -599,24 +599,205 @@ Phase 3 (DQN — identical to Method 1):
 
 ---
 
+## Method 8: LSTM-DQN-TabPFN (lstm_dqn_tabpfn/)
+
+### RL Paradigm
+Hybrid method: **TabPFN causal S-learner + offline Q-learning (LSTM-DQN)**. Same three-phase pipeline as ProCause EconML (Method 6), but replaces the GradientBoostingRegressor with a **TabPFN regressor** — a pretrained transformer that performs in-context learning over the training set at inference time, requiring no gradient-based training in Phase 1.
+
+### Three-Phase Pipeline
+
+**Phase 1 — Train TabPFN S-learner:**
+A `TabPFNRegressor` is fitted per intervention on (flat state, action, case_outcome) triplets. TabPFN is a pretrained transformer model that uses the training set as context at prediction time (in-context learning); `fit()` stores the data and `predict()` runs a transformer forward pass over it. No gradient descent occurs. A `StandardScaler` is fitted on the state features for normalisation. Outcomes are normalised (mean/std) before fitting.
+
+**Phase 2 — Compute causal rewards:**
+Identical contract to ProCause EconML: terminal transition rewards are replaced with `TabPFN_i.predict([state | action_taken])`, denormalised back to the original outcome scale. Non-terminal rewards remain 0.0.
+
+**Phase 3 — Train LSTM-DQN on causal rewards:**
+Standard LSTM-DQN with backward TD (Q3→Q2→Q1), identical to Method 1.
+
+### State Representation
+- **S-learner (Phase 1 & 2)**: Flat 16-dim state vector (same as K-means, CQL, ProCause EconML). Stored in the `state` column of the transition DataFrame during convert_data.
+- **DQN (Phase 3)**: Prefix-based sequential state — same LSTM encoding as Method 1.
+
+### Model Architecture (Phase 1 — TabPFN)
+```
+Estimator: TabPFNRegressor (pretrained transformer, in-context learning)
+  device: cuda if available, else cpu
+  random_state: seed + int_idx (for reproducibility)
+
+Input:  [16-dim StandardScaler-normalised state] + [1-dim action] = 17-dim
+Output: scalar predicted outcome (normalised), then denormalised for reward
+
+Subsampling: if training set > max_samples (default 10000), a random subset
+  is used for fitting (TabPFN has a practical limit on context size)
+```
+
+No explicit hyperparameters to tune for Phase 1 — TabPFN is pretrained and used as-is.
+
+### Model Architecture (Phase 3 — LSTM-DQN)
+Identical to Method 1: three Q-networks (Q1, Q2, Q3), hidden=128, n_layers=2, target networks τ=0.005.
+
+### Training Procedure
+```
+Phase 1 (TabPFN):
+  For each intervention i:
+    states = flat 16-dim state vectors (StandardScaler normalised)
+    X = [states | action_column]    # 17-dim
+    y = normalised case_outcome
+    TabPFN_i.fit(X, y)              # no gradient descent
+
+Phase 2:
+  For each terminal transition at intervention i:
+    causal_reward = TabPFN_i.predict([state | action]) * outcome_std + outcome_mean
+    replace observed reward with causal_reward
+
+Phase 3 (DQN — identical to Method 1):
+  Optimizer: Adam, dqn_lr=1e-3
+  Batch size: 256
+  Epochs: 50, patience: 10
+  Backward TD: Q3 → Q2 → Q1
+  Tau: 0.005, Gamma: 0.99
+```
+
+### Key Hyperparameters (defaults)
+| Parameter | Value |
+|-----------|-------|
+| tabpfn_max_samples | 10000 |
+| dqn_lr | 1e-3 |
+| dqn_epochs | 50 |
+| dqn_patience | 10 |
+| emb_dim | 32 |
+| hidden | 128 |
+| n_layers | 2 |
+| dropout | 0.2 |
+| batch_size | 256 |
+| tau | 0.005 |
+| gamma | 0.99 |
+
+### Checkpoint Keys
+`tabpfn_0/1/2` (pickled), `scaler_0/1/2` (pickled), `outcome_mean_i`, `outcome_std_i`, `Q1`, `Q2`, `Q3`, `config`
+
+---
+
+## Method 9: LSTM-DQN-DragonNet (lstm_dqn_dragonnet/)
+
+### RL Paradigm
+Hybrid method: **LSTM-DragonNet causal outcome model + offline Q-learning (LSTM-DQN)**. Same three-phase pipeline as ProCause LSTM (Method 7), but replaces the plain LSTM S-learner with a **DragonNet** architecture that adds a propensity head and targeted regularisation loss (Shi et al., 2019). The targeted regularisation encourages outcome predictions to be locally invariant to propensity perturbations, improving causal reward quality under confounding.
+
+### Three-Phase Pipeline
+
+**Phase 1 — Train LSTM-DragonNet:**
+An `LSTM_DragonNet` is trained per intervention on (prefix, action, case_outcome) triplets. The model jointly optimises a factual outcome loss, a propensity loss (predicting which action was taken), and a targeted regularisation term. Only the outcome heads are used downstream.
+
+**Phase 2 — Compute causal rewards:**
+Terminal transition rewards are replaced with the factual outcome head prediction: `head_action(Φ(prefix))`, denormalised. The propensity head and `eps` parameter are not used at this stage.
+
+**Phase 3 — Train LSTM-DQN on causal rewards:**
+Standard LSTM-DQN with backward TD (Q3→Q2→Q1), identical to Method 1.
+
+### State Representation
+Both the DragonNet and the DQN use prefix-based sequential state — identical LSTM encoding (emb_dim=32, hidden=128, n_layers=2). This is the same as ProCause LSTM (Method 7).
+
+### Network Architecture (Phase 1 — LSTM_DragonNet)
+```
+Shared LSTM trunk Φ:
+  Activity embedding: nn.Embedding(n_activities, emb_dim=32)
+  LSTM: input=(emb_dim+6)=38, hidden=128, n_layers=2, dropout=0.2
+  Output: representation r = Φ(prefix), 128-dim
+
+Per-action outcome heads (one per action for this intervention):
+  head_a: Linear(128→64) → ReLU → Dropout(0.2) → Linear(64→1)
+  Predicts scalar outcome if action a were taken.
+  Int. 0 & 1: 2 heads. Int. 2: 3 heads.
+
+Propensity head:
+  Linear(128→64) → ReLU → Dropout(0.2) → Linear(64→n_actions)
+  Outputs logits → softmax gives P(action | prefix)
+
+Targeted regularisation scalar:
+  self.eps: nn.Parameter (scalar, one per intervention model, learned)
+```
+
+### DragonNet Loss
+```
+factual_loss    = MSE(head_a(r), observed_outcome_normalised)
+
+propensity_loss = CrossEntropy(prop_logits, observed_action)
+
+targeted_loss   = MSE(outcome_pred + eps * (1 / p_obs), observed_outcome_normalised)
+  where p_obs = softmax(prop_logits)[observed_action], clamped >= 1e-6
+
+total_loss = factual_loss + alpha_prop * propensity_loss + alpha_targeted * targeted_loss
+```
+
+### Training Procedure
+```
+Phase 1 (DragonNet):
+  Optimizer: Adam, lr=1e-3, weight_decay=1e-5
+  Loss: DragonNet loss (factual + propensity + targeted)
+  Batch size: 256
+  Epochs: 150, patience: 15
+  Early stopping criterion: validation factual MSE only
+  LR scheduler: ReduceLROnPlateau, factor=0.5, patience=5
+
+Phase 2:
+  For each terminal transition at intervention i:
+    causal_reward = head_action(Φ(prefix)) * outcome_std + outcome_mean
+    replace observed reward with causal_reward
+    (propensity head and eps not used here)
+
+Phase 3 (DQN — identical to Method 1):
+  Optimizer: Adam, dqn_lr=1e-3
+  Batch size: 256
+  Epochs: 50, patience: 10
+  Backward TD: Q3 → Q2 → Q1
+  Tau: 0.005, Gamma: 0.99
+```
+
+### Key Hyperparameters (defaults)
+| Parameter | Value |
+|-----------|-------|
+| emb_dim | 32 |
+| hidden | 128 |
+| n_layers | 2 |
+| dropout | 0.2 |
+| slearner_lr | 1e-3 |
+| slearner_epochs | 150 |
+| patience (DragonNet) | 15 |
+| alpha_prop | 1.0 |
+| alpha_targeted | 1.0 |
+| dqn_lr | 1e-3 |
+| dqn_epochs | 50 |
+| dqn_patience | 10 |
+| batch_size | 256 |
+| tau | 0.005 |
+| gamma | 0.99 |
+
+### Checkpoint Keys
+`dragonnet_1/2/3` (state dicts), `Q1`, `Q2`, `Q3`, `config`
+
+### Relationship to CFRNet
+DragonNet supersedes the earlier CFRNet implementation. CFRNet used MMD/IPM loss to balance representations across treatment groups, which hurt performance on confounded offline data by destroying confounder information in the shared encoder. DragonNet instead models confounding explicitly via the propensity head, leaving the representation free to retain all predictive signal.
+
+---
+
 ## Cross-Method Comparison Table
 
-| Aspect | LSTM-DQN | RIMS | K-means | Single CQL | Multi CQL | ProCause EconML | ProCause LSTM |
-|--------|----------|------|---------|------------|-----------|-----------------|---------------|
-| **RL type** | Offline Q-learning | Online Q-learning | Offline FQI (tabular) | Offline CQL | Offline CQL | Causal ML + Offline DQN | Causal ML + Offline DQN |
-| **State type (policy)** | Sequential prefix | Sequential prefix | Flat 16-dim | Flat 19-dim | Flat 5/16-dim | Sequential prefix (DQN) | Sequential prefix (both) |
-| **State type (causal)** | — | — | — | — | — | Flat 16-dim (GBR) | Sequential prefix (LSTM) |
-| **Network** | LSTM + FC | LSTM + FC | K-means + table | MLP 256×2 | 3× MLP 256×2 | GBR + LSTM-DQN | LSTM S-learner + LSTM-DQN |
-| **Activity enc** | Embedding/onehot | Embedding/onehot | Count vector | Count vector | Count vector | Count vec (GBR) / Emb (DQN) | Embedding/onehot |
-| **Backward TD** | Yes | Yes | Yes | Yes | Yes | Yes (DQN phase) | Yes (DQN phase) |
-| **Target network** | Yes (τ=0.005) | Yes (τ=0.005) | No | Yes (τ=0.005) | Yes (τ=0.005) | Yes (τ=0.005, DQN phase) | Yes (τ=0.005, DQN phase) |
-| **CQL penalty** | No | No | No | Yes (α=1.0) | Yes (α=1.0) | No | No |
-| **Reward signal** | Observed step reward | Simulated step reward | Observed step reward | Observed step reward | Observed step reward | Causal CATE reward | Causal CATE reward |
-| **Discount γ** | 0.99 | 0.99 | 0.99 | 0.99 | 0.99 | 0.99 (DQN phase) | 0.99 (DQN phase) |
-| **Loss fn** | MSE | MSE | Mean aggregation | MSE + CQL | MSE + CQL | MSE (both phases) | MSE (both phases) |
-| **Env interaction** | None (offline) | Learned simulator | None (offline) | None (offline) | None (offline) | None (offline) | None (offline) |
-| **Data needed** | Transitions + prefixes | Transitions + raw log | Transitions | Transitions | Transitions | Transitions + outcomes + prefixes | Transitions + outcomes + prefixes |
-| **Model files** | 3 Q-nets + stats | 3 Q-nets + 2 sim-nets | 3 KMeans + Q-tables | 1 network | 3 networks | 3 GBR + 3 Q-nets | 3 S-learners + 3 Q-nets |
+| Aspect | LSTM-DQN | RIMS | K-means | Single CQL | Multi CQL | ProCause EconML | ProCause LSTM | TabPFN | DragonNet |
+|--------|----------|------|---------|------------|-----------|-----------------|---------------|--------|-----------|
+| **RL type** | Offline DQN | Online DQN | Offline FQI | Offline CQL | Offline CQL | Causal + Offline DQN | Causal + Offline DQN | Causal + Offline DQN | Causal + Offline DQN |
+| **State (policy)** | Seq. prefix | Seq. prefix | Flat 16-dim | Flat 19-dim | Flat 5/16-dim | Seq. prefix | Seq. prefix | Seq. prefix | Seq. prefix |
+| **State (causal)** | — | — | — | — | — | Flat 16-dim | Seq. prefix | Flat 16-dim | Seq. prefix |
+| **Causal model** | — | — | — | — | — | GBR S-learner | LSTM S-learner | TabPFN S-learner | LSTM DragonNet |
+| **Network** | LSTM+FC | LSTM+FC | KMeans+table | MLP 256×2 | 3×MLP 256×2 | GBR+LSTM-DQN | LSTM+LSTM-DQN | TabPFN+LSTM-DQN | DragonNet+LSTM-DQN |
+| **Causal model trains?** | — | — | — | — | — | Yes (GBR) | Yes (LSTM) | No (pretrained) | Yes (LSTM) |
+| **Confounding mechanism** | None | None | None | None | None | S-learner | S-learner | S-learner | Propensity + targeted reg. |
+| **Backward TD** | Yes | Yes | Yes | Yes | Yes | Yes (DQN) | Yes (DQN) | Yes (DQN) | Yes (DQN) |
+| **Target network** | Yes τ=0.005 | Yes τ=0.005 | No | Yes τ=0.005 | Yes τ=0.005 | Yes τ=0.005 | Yes τ=0.005 | Yes τ=0.005 | Yes τ=0.005 |
+| **CQL penalty** | No | No | No | Yes α=1.0 | Yes α=1.0 | No | No | No | No |
+| **Reward signal** | Observed | Simulated | Observed | Observed | Observed | Causal reward | Causal reward | Causal reward | Causal reward |
+| **Loss fn** | MSE | MSE | Mean agg. | MSE+CQL | MSE+CQL | MSE | MSE | MSE | MSE+CE+targeted |
+| **Env interaction** | None | Simulator | None | None | None | None | None | None | None |
 
 ---
 
@@ -670,6 +851,8 @@ generate_data.py  (or shared/generate_data.py)
   └─ multiCQL:     data/multi_cql_{suffix}_{n}_trans_{train|val}.pkl
   └─ econml:       data/procause_econml_{suffix}_{n}_trans_{train|val}.pkl
   └─ lstm_sl:      data/procause_lstm_{suffix}_{n}_trans_{train|val}.pkl
+  └─ tabpfn:       data/lstm_dqn_tabpfn_{suffix}_{n}_trans_{train|val}.pkl  (prefix + flat state)
+  └─ dragonnet:    data/lstm_dqn_dragonnet_{suffix}_{n}_trans_{train|val}.pkl  (prefix sequences)
 
 {method}/train.py  (reads converted data, writes model)
   └─ models/{method}_{suffix}_{n}_s{seed}.pkl (or .pt)
