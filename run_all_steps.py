@@ -21,7 +21,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
 SEEDS = [42, 123, 456, 789, 1024]
-ALL_METHODS = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL', 'lstm_dqn_dragonnet', 'lstm_dqn_tabpfn']
+ALL_METHODS = ['kmeans', 'lstm', 'rims', 'multiModelCQL', 'singleModelCQL', 'lstm_dqn_dragonnet', 'lstm_dqn_tabpfn', 'procause_econml', 'procause_lstm']
 ALL_STEPS   = [1, 2, 3]
 
 METHOD_SCRIPTS = {
@@ -67,6 +67,18 @@ METHOD_SCRIPTS = {
         'train':    'lstm_dqn_tabpfn/train.py',
         'evaluate': 'lstm_dqn_tabpfn/evaluate.py',
     },
+    'procause_econml': {
+        'generate': 'procause/econml_slearner/generate_data.py',
+        'convert':  'procause/econml_slearner/convert_data.py',
+        'train':    'procause/econml_slearner/train.py',
+        'evaluate': 'procause/econml_slearner/evaluate.py',
+    },
+    'procause_lstm': {
+        'generate': 'procause/lstm_slearner/generate_data.py',
+        'convert':  'procause/lstm_slearner/convert_data.py',
+        'train':    'procause/lstm_slearner/train.py',
+        'evaluate': 'procause/lstm_slearner/evaluate.py',
+    },
 }
 
 # File prefix used in data/ and models/ directories
@@ -78,6 +90,8 @@ FILE_PREFIX = {
     'singleModelCQL': 'single_cql',
     'lstm_dqn_dragonnet':  'lstm_dqn_dragonnet',
     'lstm_dqn_tabpfn':  'lstm_dqn_tabpfn',
+    'procause_econml':  'procause_econml',
+    'procause_lstm':    'procause_lstm',
 }
 
 
