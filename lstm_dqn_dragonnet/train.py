@@ -5,6 +5,7 @@ import argparse
 import copy
 import random
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -413,36 +414,110 @@ def main():
         save_dict[f'dragonnet_{int_idx+1}'] = dragonnet.state_dict()
 
     # ===================================================================
-    # Phase 2: Compute causal rewards using DragonNet outcome heads
-    # Only the 'reward' column at terminal transitions is replaced;
-    # non-terminal rewards stay 0.0. Causal rewards then feed Phase 3 DQN.
-    # Propensity head and targeted regularizer are not used here.
+    # Phase 2: Counterfactual-augmented causal rewards (DragonNet)
+    # -------------------------------------------------------------------
+    # COUNTERFACTUAL AUGMENTATION CHANGE (2026-04-21)
+    # Previously, this phase only replaced the observed reward at terminal
+    # transitions with the factual outcome head (the head matching
+    # action_taken). Now, in addition to that factual replacement, we
+    # synthesize one extra transition per alternative action a in
+    # range(N_ACTIONS[int_idx]) — identical to the original row except
+    # action=a and reward=<per-action outcome head a>(state).
+    #
+    # predict_outcomes() dispatches to the per-action outcome head based
+    # on the `actions` argument (see LSTM_DragonNet.forward), so calling
+    # it with a constant-a action vector routes everything through head a.
+    # The propensity head and targeted regulariser are not used here.
+    #
+    # Non-terminal transitions are NOT augmented.
+    # Expected buffer size per intervention ~= #terminal * N_ACTIONS[int_idx]
+    #                                          + #non-terminal (unchanged).
+    #
+    # To revert to the previous factual-only behaviour, see the commented
+    # block tagged "ORIGINAL PHASE 2 (factual replacement)" below.
+    # Phase 1 and Phase 3 are intentionally unchanged.
     # ===================================================================
     print(f"\n{'='*50}")
-    print("Phase 2: Computing causal rewards")
+    print("Phase 2: Counterfactual augmentation via DragonNet outcome heads")
     print('='*50)
 
     df_train_causal = df_train.copy()
     df_val_causal   = df_val.copy()
+    train_synth_chunks = []
+    val_synth_chunks   = []
 
     for int_idx, slearner in slearners.items():
-        for df_c, label in [(df_train_causal, 'train'), (df_val_causal, 'val')]:
+        n_act_i = N_ACTIONS[int_idx]
+        for df_c, synth_list, label in [
+            (df_train_causal, train_synth_chunks, 'train'),
+            (df_val_causal,   val_synth_chunks,   'val'),
+        ]:
             terminal_mask = (df_c['intervention'] == int_idx) & (df_c['terminal'] == True)
             if not terminal_mask.any():
                 continue
 
             sub = df_c[terminal_mask]
             acts, feats, lens = encode(sub['prefix'].tolist(), activity_to_idx, feat_means, feat_stds, max_len)
-            actions = np.array(sub['action'].tolist())
+            factual_actions = np.array(sub['action'].tolist())
 
-            preds_norm = predict_outcomes(slearner, acts, feats, lens, actions)
+            # (1) Factual leg — per-action outcome head for the observed action.
+            preds_norm = predict_outcomes(slearner, acts, feats, lens, factual_actions)
             causal_rewards = preds_norm * outcome_std + outcome_mean
-
             df_c.loc[terminal_mask, 'reward'] = causal_rewards
-            orig_mean = sub['reward'].mean()
+
+            orig_mean   = sub['reward'].mean()
             causal_mean = float(np.mean(causal_rewards))
-            print(f"  Int.{int_idx} {label}: {terminal_mask.sum()} terminal transitions, "
-                  f"observed_reward={orig_mean:.1f}, causal_reward={causal_mean:.1f}")
+
+            # (2) Counterfactual leg — route every row through head a.
+            n_synth_total = 0
+            for a in range(n_act_i):
+                alt_mask = factual_actions != a
+                if not alt_mask.any():
+                    continue
+                a_acts    = acts[alt_mask]
+                a_feats   = feats[alt_mask]
+                a_lens    = lens[alt_mask]
+                a_actions = np.full(int(alt_mask.sum()), a, dtype=factual_actions.dtype)
+                a_preds_norm = predict_outcomes(slearner, a_acts, a_feats, a_lens, a_actions)
+                a_rewards = a_preds_norm * outcome_std + outcome_mean
+                synth = sub[alt_mask].copy()
+                synth['action'] = a
+                synth['reward'] = a_rewards
+                synth_list.append(synth)
+                n_synth_total += len(synth)
+
+            print(f"  Int.{int_idx} {label}: {int(terminal_mask.sum())} terminal, "
+                  f"obs_reward={orig_mean:.1f}, factual_causal={causal_mean:.1f}, "
+                  f"synthetic_added={n_synth_total}")
+
+    if train_synth_chunks:
+        df_train_causal = pd.concat([df_train_causal] + train_synth_chunks, ignore_index=True)
+    if val_synth_chunks:
+        df_val_causal = pd.concat([df_val_causal] + val_synth_chunks, ignore_index=True)
+    print(f"  Post-augmentation sizes: train={len(df_train_causal)}, val={len(df_val_causal)}")
+
+    # -------------------------------------------------------------------
+    # ORIGINAL PHASE 2 (factual replacement) — kept verbatim for rollback.
+    # Uncomment this block and remove the counterfactual-augmentation block
+    # above to restore the previous behaviour.
+    # -------------------------------------------------------------------
+    # df_train_causal = df_train.copy()
+    # df_val_causal   = df_val.copy()
+    # for int_idx, slearner in slearners.items():
+    #     for df_c, label in [(df_train_causal, 'train'), (df_val_causal, 'val')]:
+    #         terminal_mask = (df_c['intervention'] == int_idx) & (df_c['terminal'] == True)
+    #         if not terminal_mask.any():
+    #             continue
+    #         sub = df_c[terminal_mask]
+    #         acts, feats, lens = encode(sub['prefix'].tolist(), activity_to_idx, feat_means, feat_stds, max_len)
+    #         actions = np.array(sub['action'].tolist())
+    #         preds_norm = predict_outcomes(slearner, acts, feats, lens, actions)
+    #         causal_rewards = preds_norm * outcome_std + outcome_mean
+    #         df_c.loc[terminal_mask, 'reward'] = causal_rewards
+    #         orig_mean = sub['reward'].mean()
+    #         causal_mean = float(np.mean(causal_rewards))
+    #         print(f"  Int.{int_idx} {label}: {terminal_mask.sum()} terminal transitions, "
+    #               f"observed_reward={orig_mean:.1f}, causal_reward={causal_mean:.1f}")
 
     # ===================================================================
     # Phase 3: Train LSTM-DQN with causal rewards (backward TD)
