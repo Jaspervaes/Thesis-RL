@@ -9,24 +9,38 @@ All details are extracted directly from the codebase.
 
 ### State Representations
 
-Two fundamentally different state representations are used across methods:
+Two state representations are used across the codebase. Most methods use only the sequential one; the flat one appears only in K-means (which has no LSTM at all) and as the *S-learner input* of two causal hybrids (EconML, TabPFN). In every causal hybrid the **downstream DQN that selects actions is sequential** — so policy inference is sequential everywhere except K-means.
 
-**Prefix-based (sequential) state — LSTM, RIMS, Single-Model CQL, Multi-Model CQL, ProCause LSTM, DragonNet (DQN phase), TabPFN (DQN phase), EconML (DQN phase):**
+**Prefix-based (sequential) state — used by the policy/Q-network in every method except K-means** (LSTM, RIMS, Single-Model CQL, Multi-Model CQL, and the Phase-3 DQN of ProCause-EconML, ProCause-LSTM, TabPFN, DragonNet):
 - A variable-length sequence of events from the start of a case up to (not including) the intervention point
-- Each timestep in the sequence has 7 features: 6 continuous features + 1 activity identifier
+- Each timestep has 7 features: 6 continuous features + 1 activity identifier
 - Continuous features (`FEATURE_COLS` in `shared/lstm_utils.py`): `amount`, `est_quality`, `unc_quality`, `interest_rate`, `cum_cost`, `elapsed_time`
 - Activity identifier: either integer index (integer encoding) or one-hot vector (onehot encoding)
-- Sequences are padded to `max_len` (typically 10, set from training set max prefix length) and packed with `pack_padded_sequence` for efficient LSTM processing
+- Sequences are padded to `max_len` (typically 10, set from training-set max prefix length) and packed with `pack_padded_sequence` for efficient LSTM processing
 - Per-feature normalisation: mean/std computed from training prefixes; `feat_means` and `feat_stds` are saved with the checkpoint via `build_vocab_and_stats()`
 
-**Flat state vector — K-means, ProCause EconML / TabPFN (causal S-learner phase only):**
+**Flat state vector — K-means policy + the *causal S-learner input* of EconML and TabPFN** (NOT used as the DQN input in any method):
 - Fixed 17-dimensional vector: 5 base features + 12 activity-count features
 - Base features (5, `BASE_FEATURES` in `shared/experiment_config.py`): `amount`, `est_quality`, `unc_quality`, `cum_cost`, `elapsed_time`
 - Activity counts (12, `TRACKED_ACTIVITIES`): `initiate_application`, `start_standard`, `start_priority`, `call_customer`, `email_customer`, `validate_application`, `contact_headquarters`, `skip_contact`, `calculate_offer`, `cancel_application`, `receive_acceptance`, `receive_refusal`
 - `STATE_DIM = len(BASE_FEATURES) + len(TRACKED_ACTIVITIES) = 17`
 - Built by `extract_state(event, activity_counts)` in `shared/data_utils.py`
 
+For ProCause-LSTM and DragonNet the S-learner is *also* sequential (it shares the same prefix encoder as the DQN); only EconML's GBR S-learner and TabPFN's transformer S-learner consume the flat 17-dim state.
+
 Note: the LSTM `FEATURE_COLS` (per-timestep features) include `interest_rate` and use `[amount, est_quality, unc_quality, interest_rate, cum_cost, elapsed_time]` (6 features). The flat state intentionally drops `interest_rate` because at int 0 / int 1 it is undefined; intervention 2's interest-rate decision is the action itself.
+
+Quick map:
+
+| Method | Policy/Q-network state | Causal model state |
+|--------|------------------------|--------------------|
+| LSTM-DQN, RIMS | sequential prefix | — |
+| K-means | flat 17-dim | — |
+| Single CQL, Multi CQL | sequential prefix | — |
+| ProCause EconML | sequential prefix (DQN) | flat 17-dim (GBR) |
+| ProCause LSTM | sequential prefix (DQN) | sequential prefix (LSTM S-learner) |
+| TabPFN | sequential prefix (DQN) | flat 17-dim (TabPFN) |
+| DragonNet | sequential prefix (DQN) | sequential prefix (LSTM-DragonNet) |
 
 ### Intervention Points (SimBank)
 Three sequential intervention points in every case:

@@ -31,7 +31,8 @@ from shared import (
 )
 from shared.subset_policy import SubsetPolicy
 
-SEEDS = [42, 123, 456, 789, 1024]
+DEFAULT_SEEDS = [42, 123, 456, 789, 1024]
+SEEDS = DEFAULT_SEEDS  # overridden by --seeds if provided
 
 COMBINATIONS = [
     (frozenset({0}),       "Int0_only"),
@@ -151,8 +152,13 @@ def main():
     parser.add_argument('--n_cases',       type=int, default=10000)
     parser.add_argument('--n_episodes',    type=int, default=1000)
     parser.add_argument('--no_confounded', action='store_true')
+    parser.add_argument('--seeds',         nargs='+', type=int, default=None,
+                        help="Seeds to use (default: all 5). Useful for diagnostic runs with partial models.")
     parser.add_argument('--results_out',   type=str, default='results/intervention_combos_results.json')
     args = parser.parse_args()
+    if args.seeds:
+        global SEEDS
+        SEEDS = args.seeds
 
     os.chdir(script_dir)
     os.makedirs(os.path.dirname(args.results_out), exist_ok=True)
