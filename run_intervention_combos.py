@@ -1,22 +1,23 @@
 """
-Run all 7 non-empty subsets of {Int0, Int1, Int2} using existing steps=3 models.
+Joint vs subset training comparison for LSTM-DQN on CONF or RCT data.
 
-Reuses the steps=3-trained Q1, Q2, Q3 networks for every intervention. For each
-combination, non-active interventions fall back to bank_policy via SubsetPolicy.
-No retraining is performed.
+For each subset of active interventions, generates subset-specific data
+(inactive interventions always follow bank policy), trains LSTM-DQN Q-networks
+with TD routing between active interventions, and evaluates.
 
-Methods with missing model files are skipped with a warning, so this script can
-be run on any machine that has at least some of the steps=3 models trained.
+Compares against the existing joint 3-step baseline from all_results.json.
 
 Usage:
-    python -u run_intervention_combos.py                              # all methods, RCT+CONF
-    python -u run_intervention_combos.py --methods lstm rims          # subset
-    python -u run_intervention_combos.py --no_confounded              # RCT only
+    python -u run_intervention_combos.py                       # CONF, all subsets, all seeds
+    python -u run_intervention_combos.py --suffix RCT          # RCT regime
+    python -u run_intervention_combos.py --seeds 42            # single seed (for testing)
+    python -u run_intervention_combos.py --subsets 1,2         # specific subsets
 """
 import sys
 import os
-import argparse
 import json
+import argparse
+import subprocess
 import numpy as np
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -25,207 +26,184 @@ sys.stderr.reconfigure(line_buffering=True)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
-from shared import (
-    load_pickle, bank_policy, evaluate_policy,
-    LSTM_DQN, N_ACTIONS,
-)
-from shared.subset_policy import SubsetPolicy
-
-DEFAULT_SEEDS = [42, 123, 456, 789, 1024]
-SEEDS = DEFAULT_SEEDS  # overridden by --seeds if provided
-
-COMBINATIONS = [
-    (frozenset({0}),       "Int0_only"),
-    (frozenset({1}),       "Int1_only"),
-    (frozenset({2}),       "Int2_only"),
-    (frozenset({0, 1}),    "Int01"),
-    (frozenset({0, 2}),    "Int02"),
-    (frozenset({1, 2}),    "Int12"),
-    (frozenset({0, 1, 2}), "Int012"),
-]
-
-# Most methods follow the same pattern: torch.load → cfg + Q1/Q2/Q3 state_dicts → wrap in policy class.
-# (file_prefix, policy_module, policy_class, pass_activity_enc)
-LSTM_DQN_METHODS = {
-    'lstm':               ('lstm',                'lstm.evaluate',                     'LSTMPolicy',            True),
-    'rims':               ('rims',                'rims.evaluate',                     'RIMSPolicy',            True),
-    'multiModelCQL':      ('multi_cql',           'multiModelCQL.evaluate',            'CQLPolicy',             False),
-    'lstm_dqn_dragonnet': ('lstm_dqn_dragonnet',  'lstm_dqn_dragonnet.evaluate',       'LSTMDQNCFRNetPolicy',   False),
-    'lstm_dqn_tabpfn':    ('lstm_dqn_tabpfn',     'lstm_dqn_tabpfn.evaluate',          'LSTMDQNTabPFNPolicy',   False),
-    'procause_econml':    ('procause_econml',     'procause.econml_slearner.evaluate', 'ProCauseEconMLPolicy',  False),
-    'procause_lstm':      ('procause_lstm',       'procause.lstm_slearner.evaluate',   'ProCauseLSTMPolicy',    False),
-}
-
-ALL_METHODS = ['kmeans'] + list(LSTM_DQN_METHODS.keys()) + ['singleModelCQL']
-
-FILE_PREFIX = {m: LSTM_DQN_METHODS[m][0] for m in LSTM_DQN_METHODS}
-FILE_PREFIX['kmeans']         = 'kmeans'
-FILE_PREFIX['singleModelCQL'] = 'single_cql'
+SUBSETS   = [[0], [1], [2], [0, 1], [0, 2], [1, 2], [0, 1, 2]]
+SEEDS     = [42, 123, 456, 789, 1024]
+N_CASES   = 10000
+N_EPISODES = 1000
 
 
-def model_path(method, suffix, n_cases, seed):
-    ext = 'pkl' if method == 'kmeans' else 'pth'
-    return f"models/{FILE_PREFIX[method]}_{suffix}_{n_cases}_s{seed}.{ext}"
+def active_tag(active):
+    """Model/result tag — always unique per subset."""
+    return "_active" + "".join(str(i) for i in sorted(active))
 
 
-def models_exist(method, suffix, n_cases):
-    return all(os.path.exists(model_path(method, suffix, n_cases, s)) for s in SEEDS)
+def data_tag(active):
+    """Data tag — [0,1,2] reuses the standard CONF dataset."""
+    return "" if sorted(active) == [0, 1, 2] else "_active" + "".join(str(i) for i in sorted(active))
 
 
-def _load_lstm_dqn(method_key, suffix, n_cases, seed):
-    import torch
-    import importlib
-
-    file_prefix, module_path, class_name, pass_activity_enc = LSTM_DQN_METHODS[method_key]
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    ckpt = torch.load(model_path(method_key, suffix, n_cases, seed),
-                      map_location=device, weights_only=False)
-    cfg = ckpt['config']
-
-    def load_net(key, n_act):
-        kwargs = {}
-        if pass_activity_enc:
-            kwargs['activity_enc'] = cfg.get('activity_enc', 'integer')
-        m = LSTM_DQN(cfg['n_activities'], cfg['n_features'], n_act,
-                     cfg['emb_dim'], cfg['hidden'], cfg['n_layers'], cfg['dropout'],
-                     **kwargs).to(device)
-        m.load_state_dict(ckpt[key])
-        m.eval()
-        return m
-
-    models = {0: load_net('Q1', N_ACTIONS[0]),
-              1: load_net('Q2', N_ACTIONS[1]),
-              2: load_net('Q3', N_ACTIONS[2])}
-
-    mod = importlib.import_module(module_path)
-    policy_class = getattr(mod, class_name)
-    return policy_class(models, cfg, steps=3)
+def ids_str(active):
+    return "".join(str(i) for i in sorted(active))
 
 
-def make_lstm_dqn_loader(method_key):
-    return lambda suffix, n_cases, seed: _load_lstm_dqn(method_key, suffix, n_cases, seed)
-
-
-def load_kmeans_policy(suffix, n_cases, seed):
-    from kmeans.evaluate import KMeansPolicy
-    ckpt = load_pickle(model_path('kmeans', suffix, n_cases, seed))
-    return KMeansPolicy(ckpt['models'], ckpt['q_tables'], steps=3)
-
-
-def load_single_cql_policy(suffix, n_cases, seed):
-    """singleModelCQL has one shared LSTM_DQN with cfg['max_actions'] outputs, masked at eval."""
-    import torch
-    from singleModelCQL.evaluate import CQLPolicy
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    ckpt = torch.load(model_path('singleModelCQL', suffix, n_cases, seed),
-                      map_location=device, weights_only=False)
-    cfg = ckpt['config']
-    model = LSTM_DQN(cfg['n_activities'], cfg['n_features'], cfg['max_actions'],
-                     cfg['emb_dim'], cfg['hidden'], cfg['n_layers'], cfg['dropout']).to(device)
-    model.load_state_dict(ckpt['model'])
-    model.eval()
-    return CQLPolicy(model, cfg, steps=3)
-
-
-METHOD_LOADERS = {
-    'kmeans':         load_kmeans_policy,
-    'singleModelCQL': load_single_cql_policy,
-}
-for _m in LSTM_DQN_METHODS:
-    METHOD_LOADERS[_m] = make_lstm_dqn_loader(_m)
-
-
-def aggregate_combo(per_seed_avgs):
-    arr = np.array(per_seed_avgs, dtype=float)
-    return {
-        'mean':     float(arr.mean()),
-        'std':      float(arr.std()),
-        'per_seed': {str(s): float(v) for s, v in zip(SEEDS, per_seed_avgs)},
-    }
+def run(cmd, label):
+    print(f"\n  [RUN] {label}")
+    print(f"        {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=False)
+    if result.returncode != 0:
+        print(f"  [ERROR] {label} exited with code {result.returncode}", file=sys.stderr)
+        sys.exit(result.returncode)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--methods',       nargs='+', default=ALL_METHODS, choices=ALL_METHODS)
-    parser.add_argument('--n_cases',       type=int, default=10000)
-    parser.add_argument('--n_episodes',    type=int, default=1000)
-    parser.add_argument('--no_confounded', action='store_true')
-    parser.add_argument('--seeds',         nargs='+', type=int, default=None,
-                        help="Seeds to use (default: all 5). Useful for diagnostic runs with partial models.")
-    parser.add_argument('--results_out',   type=str, default='results/intervention_combos_results.json')
+    parser.add_argument('--seeds',   nargs='+', type=int, default=None)
+    parser.add_argument('--subsets', type=str, default=None,
+                        help='Comma-separated subset ids to run, e.g. "1,2,12,02,012"')
+    parser.add_argument('--suffix',  type=str, default='CONF', choices=['CONF', 'RCT'],
+                        help='Data regime for both data generation and training (default: CONF).')
+    parser.add_argument('--results_out', type=str, default=None,
+                        help='Defaults to results/lstm_joint_vs_subset.json for CONF, '
+                             'results/lstm_joint_vs_subset_rct.json for RCT.')
     args = parser.parse_args()
-    if args.seeds:
-        global SEEDS
-        SEEDS = args.seeds
+
+    suffix = args.suffix
+    confounded_flag = ["--confounded"] if suffix == "CONF" else []
+    if args.results_out is None:
+        args.results_out = ('results/lstm_joint_vs_subset.json' if suffix == 'CONF'
+                            else 'results/lstm_joint_vs_subset_rct.json')
 
     os.chdir(script_dir)
-    os.makedirs(os.path.dirname(args.results_out), exist_ok=True)
+    os.makedirs("results", exist_ok=True)
 
-    suffixes = ['RCT'] if args.no_confounded else ['RCT', 'CONF']
+    seeds = args.seeds if args.seeds else SEEDS
+    subsets = SUBSETS
+    if args.subsets:
+        requested = set(args.subsets.split(','))
+        subsets = [s for s in SUBSETS if ids_str(s) in requested]
 
     all_results = {}
     if os.path.exists(args.results_out):
         with open(args.results_out) as f:
             all_results = json.load(f)
 
-    for suffix in suffixes:
-        params = load_pickle(f"data/simbank_{suffix}_{args.n_cases}_params.pkl")
+    for active in subsets:
+        tag  = active_tag(active)
+        ids  = ids_str(active)
+        key  = f"lstm_{suffix}_Int{ids}"
+        print(f"\n{'='*64}\n  Subset {{int{ids}}} | active={active} | suffix={suffix}\n{'='*64}")
 
-        bank_per_seed = []
-        for seed in SEEDS:
-            eval_seed = int(f"99{seed}")
-            print(f"[{suffix} | seed={seed}] Bank baseline")
-            res = evaluate_policy(bank_policy, args.n_episodes, params, eval_seed, verbose=False)
-            bank_per_seed.append(res['avg'])
-            print(f"  Bank avg = {res['avg']:.2f}")
+        per_seed = all_results.get(key, {}).get('per_seed', {})
 
-        all_results[f"Bank_{suffix}"] = aggregate_combo(bank_per_seed)
-
-        for method in args.methods:
-            if not models_exist(method, suffix, args.n_cases):
-                missing = [s for s in SEEDS if not os.path.exists(model_path(method, suffix, args.n_cases, s))]
-                print(f"\n  [SKIP] {method} {suffix}: missing seeds {missing}")
+        for seed in seeds:
+            if str(seed) in per_seed:
+                print(f"  [skip] seed={seed} already in results")
                 continue
 
-            print(f"\n{'='*60}\n  {method.upper()} | {suffix}\n{'='*60}")
-            method_results = {label: [] for _, label in COMBINATIONS}
+            active_str = ",".join(str(i) for i in sorted(active))
+            dtag = data_tag(active)  # "" for [0,1,2] — reuses standard regime data
 
-            for seed in SEEDS:
-                eval_seed = int(f"99{seed}")
-                print(f"\n  seed={seed}")
-                base_policy = METHOD_LOADERS[method](suffix, args.n_cases, seed)
+            # 1. Generate data — [0,1,2] reuses the standard regime dataset
+            data_raw = f"data/simbank_{suffix}_{N_CASES}{dtag}_raw.pkl"
+            if not os.path.exists(data_raw):
+                if dtag == "":
+                    print(f"  [ERROR] Standard {suffix} raw data not found: {data_raw}", file=sys.stderr)
+                    print(f"          Run the main data generation pipeline first.", file=sys.stderr)
+                    sys.exit(1)
+                run(["python", "methods/shared/generate_data.py",
+                     "--n_cases", str(N_CASES),
+                     "--seed",    str(seed),
+                     "--active",  active_str] + confounded_flag,
+                    f"generate_data {suffix} seed={seed} active={active_str}")
+            else:
+                print(f"  [skip] {data_raw} exists")
 
-                for active_ints, label in COMBINATIONS:
-                    policy = SubsetPolicy(base_policy, active_ints)
-                    res = evaluate_policy(policy, args.n_episodes, params, eval_seed,
-                                          use_prefix=True, reset_fn=policy.reset, verbose=False)
-                    method_results[label].append(res['avg'])
-                    print(f"    {label:<12} avg={res['avg']:.2f}")
+            # 2. Convert transitions — always regenerate with this seed's split so that
+            # the val set used for early stopping matches the training seed, consistent
+            # with how retrain_all_3step.py regenerates per-seed for the joint baseline.
+            if dtag == "":
+                # active=[0,1,2]: regenerate the shared standard trans file per seed
+                run(["python", "methods/LSTM-DQN/convert_data.py",
+                     "--n_cases", str(N_CASES),
+                     "--seed",    str(seed)] + confounded_flag,
+                    f"convert_data {suffix} seed={seed}")
+            else:
+                run(["python", "methods/LSTM-DQN/convert_data.py",
+                     "--n_cases",    str(N_CASES),
+                     "--active",     active_str,
+                     "--seed",       str(seed)] + confounded_flag,
+                    f"convert_data {suffix} active={active_str} seed={seed}")
 
-            for label, per_seed in method_results.items():
-                all_results[f"{method}_{suffix}_{label}"] = aggregate_combo(per_seed)
+            # 3. Train — check that checkpoint has Q_int{i} keys (not legacy Q1/Q2/Q3)
+            model_file = f"models/lstm_{suffix}_{N_CASES}_s{seed}{tag}.pth"
+            needs_train = not os.path.exists(model_file)
+            if not needs_train:
+                import torch as _torch
+                _keys = _torch.load(model_file, map_location='cpu', weights_only=False).keys()
+                needs_train = f"Q_int{sorted(active)[0]}" not in _keys
+            if needs_train:
+                run(["python", "methods/LSTM-DQN/train.py",
+                     "--n_cases",    str(N_CASES),
+                     "--seed",       str(seed),
+                     "--active",     active_str] + confounded_flag,
+                    f"train {suffix} seed={seed} active={active_str}")
+            else:
+                print(f"  [skip] {model_file} exists (Q_int keys present)")
 
+            # 4. Evaluate
+            tmp_file = f"results/_tmp_subset_{suffix}_{ids}_seed{seed}.json"
+            run(["python", "methods/LSTM-DQN/evaluate.py",
+                 "--n_cases",    str(N_CASES),
+                 "--train_seed", str(seed),
+                 "--n_episodes", str(N_EPISODES),
+                 "--active",     active_str,
+                 "--results_file", tmp_file] + confounded_flag,
+                f"evaluate {suffix} seed={seed} active={active_str}")
+
+            with open(tmp_file) as f:
+                tmp = json.load(f)
+            per_seed[str(seed)] = tmp[key]
+            os.remove(tmp_file)
+
+            # Save partial results after each seed
+            vals = [v for v in per_seed.values()]
+            all_results[key] = {
+                'mean':     float(np.mean(vals)),
+                'std':      float(np.std(vals)),
+                'per_seed': per_seed,
+            }
             with open(args.results_out, 'w') as f:
                 json.dump(all_results, f, indent=2)
-            print(f"\n  [saved] {args.results_out}")
+            print(f"  [saved] seed={seed} outcome={per_seed[str(seed)]:.2f}")
 
-    print(f"\n{'='*78}\n  SUMMARY\n{'='*78}")
-    print(f"{'Method':<20} {'Cond':<6} {'Combination':<14} {'Mean':>10} {'Std':>8} {'vs Bank':>10}")
-    print('-' * 78)
-    for method in args.methods:
-        for suffix in suffixes:
-            bank_mean = all_results.get(f"Bank_{suffix}", {}).get('mean', 0)
-            for _, label in COMBINATIONS:
-                key = f"{method}_{suffix}_{label}"
-                if key not in all_results:
-                    continue
-                agg = all_results[key]
-                gain = ((agg['mean'] / bank_mean) - 1) * 100 if bank_mean > 0 else float('nan')
-                print(f"{method:<20} {suffix:<6} {label:<14} {agg['mean']:>10.2f} {agg['std']:>8.2f} {gain:>9.1f}%")
+    # Add joint baseline from all_results.json
+    all_json = "results/all_results.json"
+    joint_key = f"lstm_{suffix}_joint"
+    if os.path.exists(all_json):
+        with open(all_json) as f:
+            ar = json.load(f)
+        src = f"lstm_{suffix}_3"
+        if src in ar:
+            all_results[joint_key] = ar[src].get("aggregated", {})
+            print(f"\n[OK] Loaded {joint_key} from all_results.json")
 
-    print(f"\n[OK] Saved to {args.results_out}")
+    with open(args.results_out, 'w') as f:
+        json.dump(all_results, f, indent=2)
+
+    # Summary table
+    print(f"\n{'='*64}\n  SUMMARY ({suffix})\n{'='*64}")
+    print(f"  {'Key':<24} {'Mean':>10} {'Std':>8}")
+    print("  " + "-" * 44)
+    joint_mean = all_results.get(joint_key, {}).get("mean", 0) or \
+                 all_results.get(joint_key, {}).get("avg", 0)
+    if joint_mean:
+        print(f"  {joint_key:<24} {joint_mean:>10.2f}")
+    for k in [f"lstm_{suffix}_Int{''.join(str(i) for i in sorted(s))}" for s in SUBSETS]:
+        if k in all_results:
+            agg = all_results[k]
+            print(f"  {k:<24} {agg['mean']:>10.2f} {agg['std']:>8.2f}")
+
+    print(f"\n[OK] Results saved to {args.results_out}")
 
 
 if __name__ == "__main__":

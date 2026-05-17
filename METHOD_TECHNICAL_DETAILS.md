@@ -1,7 +1,38 @@
 # Technical Reference: All Offline RL Methods for Prescriptive Process Monitoring
 
-This document provides exhaustive technical detail per method, intended as raw material for thesis writing.
-All details are extracted directly from the codebase.
+Exhaustive technical detail per method, intended as raw material for thesis writing.
+All details are extracted directly from the codebase. Project root: `SimBank-main/`.
+
+---
+
+## Repository Layout
+
+```
+SimBank-main/
+├── methods/
+│   ├── shared/                  — shared data utilities, evaluation harness, LSTM building blocks
+│   ├── K-Means-FQI/             — tabular offline RL (K-means + FQI)
+│   ├── LSTM-DQN/                — sequential offline DQN baseline
+│   ├── RIMS-DQN/                — online DQN in a learned simulator
+│   ├── CQL-SN/                  — single-network conservative Q-learning
+│   ├── CQL-MN/                  — multi-network conservative Q-learning
+│   ├── LSTM-DQN-GBR/            — causal hybrid: GBR S-learner + LSTM-DQN
+│   ├── LSTM-DQN-SLearner/       — causal hybrid: LSTM S-learner + LSTM-DQN
+│   ├── LSTM-DQN-TabPFN/         — causal hybrid: TabPFN S-learner + LSTM-DQN
+│   └── LSTM-DQN-DragonNet/      — causal hybrid: DragonNet + LSTM-DQN
+├── data/                        — generated data files (gitignored)
+├── models/                      — trained checkpoints (gitignored)
+├── results/                     — JSON result files + figures
+├── generate_data.py             — root-level entry point → delegates to methods/shared/generate_data.py
+├── run_all_steps.py             — orchestrate all 9 methods × steps × conditions × seeds
+├── run_seeds.py                 — run one method × all 5 seeds
+├── retrain_all_3step.py         — retrain all 9 methods for --steps 3 specifically
+├── run_intervention_combos.py   — LSTM-DQN joint vs subset training comparison
+├── plot_results.py              — generate thesis figures from all_results.json
+└── SimBank-main/SimBank/        — SimBank process simulator (vendored)
+```
+
+Each method directory has four scripts: `generate_data.py`, `convert_data.py`, `train.py`, `evaluate.py`.
 
 ---
 
@@ -9,40 +40,37 @@ All details are extracted directly from the codebase.
 
 ### State Representations
 
-Two state representations are used across the codebase. Most methods use only the sequential one; the flat one appears only in K-means (which has no LSTM at all) and as the *S-learner input* of two causal hybrids (EconML, TabPFN). In every causal hybrid the **downstream DQN that selects actions is sequential** — so policy inference is sequential everywhere except K-means.
+Two state representations are used across the codebase. Most methods use only the sequential one; the flat one appears only in K-Means-FQI (which has no LSTM at all) and as the S-learner input of two causal hybrids (LSTM-DQN-GBR, LSTM-DQN-TabPFN). In every causal hybrid the downstream DQN that selects actions is sequential — so policy inference is sequential everywhere except K-Means-FQI.
 
-**Prefix-based (sequential) state — used by the policy/Q-network in every method except K-means** (LSTM, RIMS, Single-Model CQL, Multi-Model CQL, and the Phase-3 DQN of ProCause-EconML, ProCause-LSTM, TabPFN, DragonNet):
+**Prefix-based (sequential) state — used by the policy/Q-network in every method except K-Means-FQI** (LSTM-DQN, RIMS-DQN, CQL-SN, CQL-MN, and the Phase-3 DQN of all four causal hybrids):
 - A variable-length sequence of events from the start of a case up to (not including) the intervention point
 - Each timestep has 7 features: 6 continuous features + 1 activity identifier
-- Continuous features (`FEATURE_COLS` in `shared/lstm_utils.py`): `amount`, `est_quality`, `unc_quality`, `interest_rate`, `cum_cost`, `elapsed_time`
-- Activity identifier: either integer index (integer encoding) or one-hot vector (onehot encoding)
-- Sequences are padded to `max_len` (typically 10, set from training-set max prefix length) and packed with `pack_padded_sequence` for efficient LSTM processing
-- Per-feature normalisation: mean/std computed from training prefixes; `feat_means` and `feat_stds` are saved with the checkpoint via `build_vocab_and_stats()`
+- Continuous features (`FEATURE_COLS` in `methods/shared/lstm_utils.py`): `amount`, `est_quality`, `unc_quality`, `interest_rate`, `cum_cost`, `elapsed_time`
+- Activity identifier: either integer index (integer encoding, default) or one-hot vector (onehot encoding)
+- Sequences are padded to `max_len` (set from training-set max prefix length) and packed with `pack_padded_sequence` for efficient LSTM processing
+- Per-feature normalisation: mean/std computed from training prefixes; `feat_means` and `feat_stds` saved in the checkpoint via `build_vocab_and_stats()`
 
-**Flat state vector — K-means policy + the *causal S-learner input* of EconML and TabPFN** (NOT used as the DQN input in any method):
+**Flat state vector — K-Means-FQI policy + the causal S-learner input of LSTM-DQN-GBR and LSTM-DQN-TabPFN** (not used as DQN input in any method):
 - Fixed 17-dimensional vector: 5 base features + 12 activity-count features
-- Base features (5, `BASE_FEATURES` in `shared/experiment_config.py`): `amount`, `est_quality`, `unc_quality`, `cum_cost`, `elapsed_time`
+- Base features (5, `BASE_FEATURES` in `methods/shared/experiment_config.py`): `amount`, `est_quality`, `unc_quality`, `cum_cost`, `elapsed_time`
 - Activity counts (12, `TRACKED_ACTIVITIES`): `initiate_application`, `start_standard`, `start_priority`, `call_customer`, `email_customer`, `validate_application`, `contact_headquarters`, `skip_contact`, `calculate_offer`, `cancel_application`, `receive_acceptance`, `receive_refusal`
-- `STATE_DIM = len(BASE_FEATURES) + len(TRACKED_ACTIVITIES) = 17`
-- Built by `extract_state(event, activity_counts)` in `shared/data_utils.py`
+- `STATE_DIM = len(BASE_FEATURES) + len(TRACKED_ACTIVITIES) = 5 + 12 = 17`
+- Built by `extract_state(event, activity_counts)` in `methods/shared/data_utils.py`
 
-For ProCause-LSTM and DragonNet the S-learner is *also* sequential (it shares the same prefix encoder as the DQN); only EconML's GBR S-learner and TabPFN's transformer S-learner consume the flat 17-dim state.
-
-Note: the LSTM `FEATURE_COLS` (per-timestep features) include `interest_rate` and use `[amount, est_quality, unc_quality, interest_rate, cum_cost, elapsed_time]` (6 features). The flat state intentionally drops `interest_rate` because at int 0 / int 1 it is undefined; intervention 2's interest-rate decision is the action itself.
-
-Quick map:
+Note: `FEATURE_COLS` (per-timestep features for LSTM methods) includes `interest_rate` and uses `[amount, est_quality, unc_quality, interest_rate, cum_cost, elapsed_time]` (6 features). The flat state intentionally drops `interest_rate` and replaces it with `elapsed_time` as a base feature, because at intervention 0 / intervention 1 the interest rate is undefined; intervention 2's interest-rate decision is the action itself.
 
 | Method | Policy/Q-network state | Causal model state |
 |--------|------------------------|--------------------|
-| LSTM-DQN, RIMS | sequential prefix | — |
-| K-means | flat 17-dim | — |
-| Single CQL, Multi CQL | sequential prefix | — |
-| ProCause EconML | sequential prefix (DQN) | flat 17-dim (GBR) |
-| ProCause LSTM | sequential prefix (DQN) | sequential prefix (LSTM S-learner) |
-| TabPFN | sequential prefix (DQN) | flat 17-dim (TabPFN) |
-| DragonNet | sequential prefix (DQN) | sequential prefix (LSTM-DragonNet) |
+| LSTM-DQN, RIMS-DQN | sequential prefix | — |
+| K-Means-FQI | flat 17-dim | — |
+| CQL-SN, CQL-MN | sequential prefix | — |
+| LSTM-DQN-GBR | sequential prefix (DQN) | flat 17-dim (GBR) |
+| LSTM-DQN-SLearner | sequential prefix (DQN) | sequential prefix (LSTM S-learner) |
+| LSTM-DQN-TabPFN | sequential prefix (DQN) | flat 17-dim (TabPFN) |
+| LSTM-DQN-DragonNet | sequential prefix (DQN) | sequential prefix (LSTM-DragonNet) |
 
 ### Intervention Points (SimBank)
+
 Three sequential intervention points in every case:
 - **Intervention 0** — `choose_procedure`: 2 actions (`start_standard`=0, `start_priority`=1)
 - **Intervention 1** — `time_contact_HQ`: 2 actions (`contact_headquarters`=0, `skip_contact`=1)
@@ -50,114 +78,98 @@ Three sequential intervention points in every case:
 
 `N_ACTIONS = [2, 2, 3]`
 
-Not every case reaches all three interventions. Convert_data handles all branching paths (only int0, int0→int1, int0→int2, int0→int1→int2).
+Not every case reaches all three interventions. Conversion scripts handle all branching paths: only-int0, int0→int1, int0→int2, int0→int1→int2.
 
 ### Backward TD Bootstrapping
-Methods that use Q-learning train in reverse intervention order: Q3 first, then Q2 using Q3 targets, then Q1 using Q2/Q3 targets. This is necessary because rewards are only observed at the final intervention (terminal transition); intermediate transitions have reward=0.
 
-The Q1 target depends on the `next_intervention` field:
-- If next is intervention 1: `r + gamma * max(Q2(s'))`
-- If next is intervention 2: `r + gamma * max(Q3(s'))`
-- If terminal: `r` (no bootstrap)
+Methods that use Q-learning train in reverse intervention order: Q₃ first, then Q₂ using Q₃ targets, then Q₁ using Q₂/Q₃ targets. This is necessary because rewards are only observed at the final intervention (terminal transition); intermediate transitions have reward=0.
 
-### Data Generation (SimBank) — quick reference
+The Q₁ target depends on the `next_intervention` field:
+- If next is intervention 1: `γ · max_a Q₂(s', a)`
+- If next is intervention 2: `γ · max_a Q₃(s', a)`
+- If terminal: `norm(r)` (no bootstrap)
+
+### Data Generation — quick reference
+
 - `generate_rct_data(n_cases, seed)` — RCT: actions assigned uniformly at random by the simulator
 - `generate_confounded_data(n_cases, seed, delta)` — confounded: mixes bank-policy and RCT logs at fraction delta (default 0.95) via `confounding_level.set_delta()`
+- Both functions are in `methods/shared/data_utils.py`
 - Output: raw DataFrame of event-log rows + params dict
 - Saved to: `data/simbank_{RCT|CONF}_{n_cases}_raw.pkl` and `data/simbank_{RCT|CONF}_{n_cases}_params.pkl`
 
-A complete walk-through of generation, conversion and loading is given in the **Data Generation, Conversion and Loading Pipeline** section below.
-
 ---
 
-## Method 1: LSTM-DQN (lstm/)
+## Method 1: LSTM-DQN (`methods/LSTM-DQN/`)
 
 ### RL Paradigm
-Offline Q-learning (DQN variant) with separate Q-networks per intervention point. Uses backward TD bootstrapping (Q3→Q2→Q1). This is the core sequence-based offline RL baseline.
+Offline Q-learning (DQN variant) with separate Q-networks per intervention point. Uses backward TD bootstrapping (Q₃→Q₂→Q₁). Core sequence-based offline RL baseline.
 
-### How Historical Data Is Used
-Historical event logs are converted to (prefix_sequence, action, reward, next_prefix_sequence, terminal, intervention_idx, next_intervention_idx) tuples. These tuples are stored in replay buffers — one per intervention — and sampled in mini-batches during training. No environment simulator is queried; the agent only sees the offline transitions.
-
-### State Representation
-Prefix-based sequential state. The prefix is the sequence of events from case start to the event immediately before the intervention decision. At intervention 0 there is always exactly 1 event (`initiate_application`). At intervention 1 there are always exactly 2 events. At intervention 2 the prefix length varies from 2 to 10 events.
-
-### Activity Encoding
-Controlled by `--activity_enc` argument (default: `integer`):
-- **integer**: each activity is mapped to a unique integer index; passed through `nn.Embedding(n_activities, emb_dim=32)` → embedding vector
-- **onehot**: activity is one-hot encoded; no embedding layer; directly concatenated with continuous features
-
-### Network Architecture (LSTM_DQN)
+### Network Architecture (LSTM_DQN in `methods/shared/lstm_utils.py`)
 ```
 Input per timestep: [activity_embedding (32-dim)] + [6 continuous features] = 38-dim  (integer mode)
                     [activity_onehot (n_activities-dim)] + [6 continuous features]      (onehot mode)
 
 LSTM: input_size=38, hidden_size=128, num_layers=2, batch_first=True, dropout=0.2 (between layers)
-  → takes packed sequences, returns final hidden state h_n[-1] (last layer, last timestep): 128-dim
+  → packed sequences, returns final hidden state h_n[-1] (last layer): 128-dim
 
 FC head:
   Linear(128 → 128) → ReLU → Dropout(0.2) → Linear(128 → n_actions)
   n_actions = 2 for interventions 0 and 1; 3 for intervention 2
 ```
 
-Three separate `LSTM_DQN` instances: Q1, Q2, Q3. Each has its own replay buffer and target network.
+Three separate `LSTM_DQN` instances (Q₁, Q₂, Q₃), each with its own target network and replay buffer.
 
 ### Target Networks
-Each Q-network has a corresponding target network (Q1t, Q2t, Q3t) with identical architecture. Target networks are updated via **soft (Polyak) updates** after every training step:
+Soft (Polyak) updates after every training step:
 ```
-θ_target ← τ * θ_online + (1 - τ) * θ_target     τ = 0.005
+θ_target ← τ · θ_online + (1 − τ) · θ_target     τ = 0.005
 ```
-Target networks are set to `.eval()` mode at creation and kept there permanently (disables dropout during target computation — Jakob's Bug 2 fix).
+Target networks are set to `.eval()` mode permanently (disables dropout during target computation).
 
-### Data Conversion (lstm/convert_data.py)
-For each case, the script identifies intervention rows by activity name, then extracts:
-- `prefix`: list of event dicts from case start up to (not including) the intervention row
-- `action`: integer action taken
-- `reward`: 0.0 for non-terminal transitions; float `outcome` for terminal transition
-- `next_prefix`: prefix at the next intervention (or empty for terminal)
-- `terminal`: True/False
-- `intervention`: 0, 1, or 2
-- `next_intervention`: 1, 2, or -1 (terminal)
-
-Continuous features in the prefix are normalised using per-feature mean and std computed from the training set. Normalisation stats and activity vocabulary are saved in the checkpoint.
+### Data Conversion (`methods/LSTM-DQN/convert_data.py`)
+Each case produces (prefix, action, reward, next_prefix, terminal, intervention, next_intervention) tuples. `prefix` is the list of event dicts from case start up to (not including) the intervention row. `reward = outcome` for terminal transitions, `0.0` otherwise. The train/val split (80/20) is by `case_nr` via `split_train_val(df, val_ratio=0.2, seed)`.
 
 ### Training Procedure
 ```
-Optimizer: Adam, lr=1e-3
+Optimizer: Adam, lr=1e-3, weight_decay=1e-5
 Loss: MSE(Q_predicted, Q_target)
-Batch size: 64
-Replay buffer capacity: 10000 per intervention
-Min samples before training: 64
-Training order: Q3 first → Q2 → Q1 (backward TD)
-Target update: soft update every step, τ=0.005
+LR scheduler: ReduceLROnPlateau(factor=0.5, patience=5)
+Batch size: 256
+Training order: Q₃ first → Q₂ → Q₁ (backward TD)
+Target update: soft Polyak, τ=0.005, after every step
 Gamma (discount): 0.99
-Early stopping: patience=10 epochs on validation loss
+Reward normalisation: norm(r) = (r − r_mean) / (r_std + 1e-8), computed from terminal rewards
+Early stopping: patience=10 epochs on validation loss, es_delta=1e-4
 Epochs: up to 50
+Grad clip: L2-norm 1.0
 ```
 
-**Q-target computation:**
+Q-target computation:
 ```python
-# For Q3 (always terminal in full 3-step):
-target = reward  # no bootstrap
+# Q₃ (terminal reward only):
+target = norm(reward)
 
-# For Q2:
-with torch.no_grad():
-    Q3t.eval()
-    next_q = Q3t(next_prefix).max(dim=1).values
-target = reward + gamma * (1 - terminal) * next_q
+# Q₂:
+next_q = Q₃t(next_prefix).max(dim=1).values
+target = term * norm(r) + (1 − term) * γ * next_q
 
-# For Q1 (routes to Q2 or Q3 depending on next_intervention):
-mask2 = (next_intervention == 1)
-mask3 = (next_intervention == 2)
-next_q = torch.zeros(batch)
-next_q[mask2] = Q2t(next_prefix[mask2]).max(dim=1).values
-next_q[mask3] = Q3t(next_prefix[mask3]).max(dim=1).values
-target = reward + gamma * (1 - terminal) * next_q
+# Q₁ (routes by next_intervention):
+m1 = non_terminal & (ni == 1)
+m2 = non_terminal & (ni == 2)
+t = term * norm(r)
+t[m1] = γ * Q₂t(next_prefix[m1]).max(1)[0]
+t[m2] = γ * Q₃t(next_prefix[m2]).max(1)[0]
 ```
 
 ### Evaluation
-The trained policy selects `argmax Q_i(prefix)` at each intervention point. The prefix is re-encoded from the running event sequence using `encode_prefix()`. Evaluated over 1000 SimBank episodes. Results compared to bank_policy and random_policy baselines (% gain over bank).
+Selects `argmax Q_i(prefix)` at each intervention point. Prefix re-encoded from the running event sequence via `encode_prefix()` in `methods/shared/lstm_utils.py`. Evaluated over 1000 SimBank episodes.
 
-### Key Hyperparameters (defaults)
+### Activity Encoding
+Controlled by `--activity_enc` argument (default: `integer`):
+- **integer**: activity mapped to integer index, through `nn.Embedding(n_activities, emb_dim=32)`
+- **onehot**: activity one-hot encoded, concatenated directly with continuous features
+
+### Key Hyperparameters
 | Parameter | Value |
 |-----------|-------|
 | emb_dim | 32 |
@@ -165,40 +177,41 @@ The trained policy selects `argmax Q_i(prefix)` at each intervention point. The 
 | n_layers | 2 |
 | dropout | 0.2 |
 | lr | 1e-3 |
-| batch_size | 64 |
+| batch_size | 256 |
 | gamma | 0.99 |
 | tau | 0.005 |
-| replay_capacity | 10000 |
 | epochs | 50 |
 | patience | 10 |
-| max_len | 10 |
 | activity_enc | integer |
-| target_calc | standard |
 
 ---
 
-## Method 2: RIMS (rims/)
+## Method 2: RIMS-DQN (`methods/RIMS-DQN/`)
 
 ### RL Paradigm
-Online DQN (epsilon-greedy) trained inside a **learned simulator** built from historical data. RIMS first mines a process simulator from the event log, then runs standard online RL inside that simulator. This is the only method that performs online RL; all others are fully offline.
+Online DQN (epsilon-greedy) trained inside a **learned simulator** built from historical data. RIMS first mines a process simulator from the event log, then runs standard online RL inside it. The only method that performs online RL; all others are fully offline.
 
-### How Historical Data Is Used — Two Phases
-
-**Phase 1: Simulator Mining (rims/convert_data.py)**
-The historical event log is used to train two LSTM models that together simulate the process:
-- **P_T (Processing Time Model)**: predicts `log(duration_seconds + 1)` for the next event given the current prefix. Architecture: `LSTM(emb_dim=32, hidden=64, n_layers=1) → Linear → scalar`. Trained with MSE loss.
-- **P_C (Control Flow Model)**: predicts which activity comes next given the current prefix (multi-class classification). Same architecture but output size = n_activities. Trained with cross-entropy loss.
+### Phase 1: Simulator Mining (`methods/RIMS-DQN/convert_data.py`)
+Two LSTM models trained from the event log:
+- **P_T (Processing Time Model)**: predicts `log(duration_seconds + 1)` for the next event given the current prefix. `LSTM(emb_dim=32, hidden=64, n_layers=1) → Linear(64→1)`. Trained with MSE loss.
+- **P_C (Control Flow Model)**: predicts which activity comes next given the current prefix. Same architecture, output size = n_activities. Trained with cross-entropy loss.
 
 Additional components mined from data:
 - **Transition matrix**: empirical probability of moving from one activity to the next
 - **Acceptance model**: logistic regression predicting case acceptance/rejection probability from final state features
-- **Initial prefix distribution**: set of real case prefixes used as starting states for simulation rollouts
+- **Initial prefix distribution**: set of real case prefixes used as starting states for rollouts
 
-**Phase 2: Online RL in Simulator (rims/train.py)**
-The Q-networks (LSTM_DQN, identical architecture to lstm/) are trained with epsilon-greedy exploration inside the learned simulator. The simulator generates full case trajectories by sequentially sampling next activities and durations from P_C and P_T. At intervention points, the Q-network selects an action. The reward is the simulated outcome.
+### Phase 2: Online RL in Simulator (`methods/RIMS-DQN/train.py`)
+Q-networks (LSTM_DQN, same architecture as LSTM-DQN) trained with epsilon-greedy exploration inside the learned simulator. At intervention points the Q-network selects an action; the simulator generates the remainder of the trajectory via P_C and P_T. The simulator class `LearnedSimBankEnv` is defined in `methods/RIMS-DQN/simulator.py` and imported by `train.py` at runtime via `from simulator import LearnedSimBankEnv` (hyphenated directory name prevents package-style import).
 
-### Network Architecture
-Q-networks: identical to LSTM-DQN (see Method 1). Three separate Q-networks (Q1, Q2, Q3) with target networks, same `(emb_dim=32, hidden=128, n_layers=2, dropout=0.2)` defaults.
+### Simulator Domain Knowledge
+- **COSTS dict**: hardcoded per-activity cost values used to compute `cum_cost` during rollout
+- **IR_LEVELS = [0.07, 0.08, 0.09]**: maps action indices to interest rate values
+- **INTERVENTION_ACTIONS dict**: maps activity names to action spaces
+- **`_calc_outcome`**: replicates SimBank's reward function (acceptance probability + loan profit)
+
+### Network Architecture (Q-networks)
+Identical to LSTM-DQN: three separate `LSTM_DQN` instances (Q₁, Q₂, Q₃) with `(emb_dim=32, hidden=128, n_layers=2, dropout=0.2)`.
 
 Simulator networks:
 ```
@@ -209,34 +222,16 @@ P_C: LSTM(emb_dim=32, hidden=64, n_layers=1) → Linear(64 → n_activities) →
 ### Training Procedure (Online RL)
 ```
 Epsilon-greedy: eps_start=1.0, eps_end=0.05, eps_decay=0.00005
-  ε decays as: ε = eps_end + (eps_start - eps_end) * exp(-steps * eps_decay)
-
-Replay buffer: capacity=50000, reward clipping to [-5000, 10000] / 1000
+  ε = eps_end + (eps_start − eps_end) · exp(−steps · eps_decay)
+Replay buffer: capacity=50000, reward clipped to [−5000, 10000] / 1000
 Optimizer: Adam, lr=1e-3
 Batch size: 128
-Gamma: 0.99
-Tau: 0.005 (soft target updates)
-Validation: every 500 episodes on held-out simulator rollouts
-Early stopping: patience=10 validation checks
-Max episodes: configurable (default ~5000+)
+Gamma: 0.99, Tau: 0.005
+Validation: every 500 episodes; early stopping patience=10 checks
+Training order: Q₃ → Q₂ → Q₁ (backward TD)
 ```
 
-Training order: Q3 → Q2 → Q1 (same backward TD as lstm/).
-Target networks updated with soft Polyak updates. Target networks kept in `.eval()` mode (dropout disabled during target computation).
-
-### Simulator Domain Knowledge
-The RIMS simulator requires hardcoded domain knowledge not needed by other methods:
-- **COSTS dict**: hardcoded per-activity cost values used to compute `cum_cost` during rollout
-- **IR_LEVELS**: maps action indices to actual interest rate values `[0.07, 0.08, 0.09]` (mirrors SimBank's `set_ir_3_levels` actions in `shared/experiment_config.INTERVENTION_INFO`)
-- **INTERVENTION_ACTIONS dict**: maps activity names to action spaces
-- **Outcome formula**: `_calc_outcome` replicates SimBank's reward function using acceptance probability + loan profit calculation
-
-This is necessary because RIMS *generates* new trajectories (it must compute costs and outcomes), whereas offline methods only *read* pre-computed transitions from the log.
-
-### Evaluation
-Identical to lstm/evaluate.py. RIMSPolicy loads Q1, Q2, Q3 from checkpoint, applies to SimBank episodes.
-
-### Key Hyperparameters (defaults)
+### Key Hyperparameters
 | Parameter | Value |
 |-----------|-------|
 | emb_dim | 32 |
@@ -258,129 +253,99 @@ Identical to lstm/evaluate.py. RIMSPolicy loads Q1, Q2, Q3 from checkpoint, appl
 
 ---
 
-## Method 3: K-means Offline RL (kmeans/)
+## Method 3: K-Means-FQI (`methods/K-Means-FQI/`)
 
 ### RL Paradigm
-Tabular offline Q-learning using K-means state abstraction (Fitted Q-Iteration variant). No neural network in the Q-function; states are discretised into clusters, and Q-values are stored in a table. One of the simplest offline RL baselines.
-
-### How Historical Data Is Used
-Historical transitions are converted to flat state vectors. K-means is fitted to cluster these states per intervention. Each cluster-action pair accumulates observed rewards (or bootstrapped TD targets). The Q-table is the mean reward per (cluster, action) cell — a single-step FQI with K-means state abstraction.
+Tabular offline Q-learning using K-means state abstraction (Fitted Q-Iteration variant). No neural network in the Q-function; states are discretised into clusters, Q-values stored in a table. Single-step FQI.
 
 ### State Representation
-Flat 16-dimensional state vector (same as CQL):
-- 5 base features: `amount`, `est_quality`, `unc_quality`, `interest_rate`, `cum_cost`
-- 11 activity counts: one count per tracked activity, accumulated up to the intervention point
+Flat 17-dimensional vector:
+- 5 base features (`BASE_FEATURES`): `amount`, `est_quality`, `unc_quality`, `cum_cost`, `elapsed_time`
+- 12 activity counts (`TRACKED_ACTIVITIES`): one count per tracked activity accumulated up to the intervention point
 
-No sequence encoding; no LSTM. The entire process history is compressed into a fixed-size activity-count vector.
+No sequence encoding; no LSTM.
 
 ### K-means Clustering
 ```
-n_clusters (k): 50 per intervention (configurable via --k_clusters)
-Features: 16-dim state vector, standardised with StandardScaler per intervention
-Algorithm: sklearn KMeans with random_state=seed
+n_clusters (k): 50 per intervention (configurable via --k)
+Features: 17-dim state vector, standardised with StandardScaler per intervention
+Algorithm: sklearn KMeans(n_clusters=k, random_state=seed, n_init=10)
 One KMeans model per intervention point (3 total)
 ```
 
-### Q-Table Construction (Backward TD)
+### Q-Table Construction (Backward FQI)
 ```
 1. Fit K-means on all training states for intervention i
 2. Assign each transition to its nearest cluster
-3. Q3: terminal transitions → Q[cluster, action] = mean(reward) across all matching transitions
-4. Q2: Q[cluster, action] = mean(reward + gamma * max_a'(Q3[next_cluster, a'])) for non-terminal
-5. Q1: same with routing to Q2 or Q3 depending on next_intervention
+3. Q₃: Q[cluster, action] = mean(reward) over all matching terminal transitions
+4. Q₂: Q[cluster, action] = mean(reward + γ · max_a Q₃[next_cluster, a]) for non-terminal
+5. Q₁: routes to Q₂ or Q₃ by next_intervention
 ```
+No gradient descent; Q-table computed directly from averaged returns.
 
-No gradient descent; the Q-table is computed directly from averaged returns. This is essentially one-step Fitted Q-Iteration.
-
-### Data Conversion (kmeans/convert_data.py)
-Extracts flat (state, action, reward, next_state, terminal, intervention, next_intervention) tuples. Same transition extraction logic as multiModelCQL. No prefix sequences needed.
+### Data Conversion (`methods/K-Means-FQI/convert_data.py`)
+Extracts flat (state, action, reward, next_state, terminal, intervention, next_intervention) tuples. `state = extract_state(event, activity_counts)`, a 17-dim vector.
 
 ### Evaluation
 ```python
-# Policy
 cluster = kmeans[int_idx].predict(scaler[int_idx].transform([state]))[0]
-action = argmax(Q_table[int_idx][cluster])
+action  = argmax(Q_table[int_idx][cluster])
 ```
+`reset()` clears running `activity_counts` between episodes.
 
-State is reconstructed from the current SimBank event by calling `extract_state(prev_event, activity_counts)`. Activity counts are accumulated during the episode.
-
-### Key Hyperparameters (defaults)
+### Key Hyperparameters
 | Parameter | Value |
 |-----------|-------|
-| k_clusters | 50 |
+| k (n_clusters) | 50 |
 | gamma | 0.99 |
 | steps | 3 |
-| seed | 42 |
 
 ---
 
-## Method 4: Single-Model CQL (singleModelCQL/)
+## Method 4: CQL-SN — Single-Network CQL (`methods/CQL-SN/`)
 
 ### RL Paradigm
-Conservative Q-Learning (CQL) with a **single LSTM-DQN** that handles all three intervention points simultaneously. The intervention point is identified implicitly via the prefix length and content; the network outputs `MAX_ACTIONS=3` Q-values, and invalid actions per intervention are masked to `-inf` in both the TD target and the CQL logsumexp before argmax/loss computation.
-
-### How Historical Data Is Used
-Sequential prefix transitions (same conversion as `lstm/`) — but stored in `data/single_cql_*_trans_{train|val}.pkl`. The CQL penalty discourages the Q-network from assigning high values to out-of-distribution actions by penalising `logsumexp(Q(s)) − Q(s, a_taken)` over the masked, valid actions.
-
-### State Representation
-Identical to LSTM-DQN: prefix-based sequential state encoded with the shared `LSTM_DQN` module (`shared/lstm_utils.py`). No flat state, no one-hot intervention vector — the model uses one shared LSTM trunk with `n_act=MAX_ACTIONS=3` outputs and per-intervention action masking.
+Conservative Q-Learning (CQL) with a **single shared LSTM-DQN** handling all three intervention points. Invalid actions per intervention are masked to −∞ in both the TD target and the CQL logsumexp before argmax/loss computation.
 
 ### Network Architecture
 ```
-Single LSTM_DQN(n_activities, n_features=6, n_act=3,
+Single LSTM_DQN(n_activities, n_features=6, n_act=MAX_ACTIONS=3,
                 emb_dim=32, hidden=128, n_layers=2, dropout=0.2)
-  Input: same as Method 1
-  Output: 3 Q-values; per-intervention masking sets invalid actions to -inf
-    → Int 0/1: Q-values for actions ≥ 2 masked
-    → Int 2:    all 3 used
+  Output: 3 Q-values; per-intervention masking sets invalid actions to −∞
+    Int 0/1: Q-values for actions ≥ 2 masked to −∞
+    Int 2:   all 3 used
 ```
 Single online network + single target network, soft Polyak updates (τ=0.005).
 
 ### CQL Loss (with action masking)
 ```python
-q          = model(prefix)                  # (B, 3)
-q_taken    = q.gather(action)               # (B,)
+q       = model(prefix)              # (B, 3)
+q_taken = q.gather(1, action)        # (B,)
 
-# TD target (next-state Q masked by next_intervention)
+# TD target — next-state Q masked by next_intervention
 nq = target(next_prefix); nq_masked = nq.clone()
-for j in 0,1,2:  nq_masked[next_int==j, N_ACTIONS[j]:] = -inf
-max_nq  = nq_masked.max(1).values
-target  = terminal * norm(reward) + (1-terminal) * gamma * max_nq
-
-td_loss  = MSE(q_taken, target)
+for j in {0,1,2}: nq_masked[next_int==j, N_ACTIONS[j]:] = −∞
+max_nq = nq_masked.max(1).values
+target = term * norm(r) + (1−term) * γ * max_nq
+td_loss = MSE(q_taken, target)
 
 # CQL penalty over masked current Q
 q_masked = q.clone()
-for j in 0,1,2:  q_masked[int==j, N_ACTIONS[j]:] = -inf
-cql_loss = (logsumexp(q_masked, dim=1) - q_taken).mean()
+for j in {0,1,2}: q_masked[int==j, N_ACTIONS[j]:] = −∞
+cql_loss = (logsumexp(q_masked, dim=1) − q_taken).mean()
 
-total = td_loss + alpha * cql_loss            # alpha = 1.0 default
+total = td_loss + α · cql_loss       # α = 1.0 default
 ```
 
-### Reward Normalisation
-Terminal-reward mean/std computed from the training set; `norm(r) = (r - r_mean) / (r_std + 1e-8)`.
-
-### Data Conversion (singleModelCQL/convert_data.py)
-Reads from `data/simbank_*_raw.pkl`, extracts (prefix, action, reward, next_prefix, terminal, intervention, next_intervention) tuples, splits 80/20 by `case_nr` via `split_train_val()` and saves `_trans_train.pkl` / `_trans_val.pkl` plus a `--steps {1,2,3}` variant tag.
-
-### Training Procedure (defaults from `singleModelCQL/train.py`)
+### Training Procedure
 ```
-Optimizer:    Adam, lr=1e-3, weight_decay=1e-5
-Scheduler:    ReduceLROnPlateau(factor=0.5, patience=5)
-Batch size:   256
-Alpha (CQL):  1.0
-Gamma:        0.99
-Tau:          0.005
-Epochs:       50
-Patience:     10 (early stopping on validation TD-MSE)
-es_delta:     1e-4
-Grad clip:    norm 1.0
+Optimizer: Adam, lr=1e-3, weight_decay=1e-5
+Scheduler: ReduceLROnPlateau(factor=0.5, patience=5)
+Batch size: 256, Alpha (CQL): 1.0, Gamma: 0.99, Tau: 0.005
+Epochs: 50, Patience: 10, es_delta: 1e-4, Grad clip: L2-norm 1.0
 ```
 
-### Evaluation
-At each intervention, encode the running prefix with `encode_prefix(cfg)`, run `Q(prefix)`, slice the first `N_ACTIONS[int_idx]` outputs, take argmax. Beyond the trained `--steps` boundary, fall back to `bank_policy`.
-
-### Key Hyperparameters (defaults)
+### Key Hyperparameters
 | Parameter | Value |
 |-----------|-------|
 | emb_dim | 32 |
@@ -394,140 +359,100 @@ At each intervention, encode the running prefix with `encode_prefix(cfg)`, run `
 | tau | 0.005 |
 | epochs | 50 |
 | patience | 10 |
-| steps | 3 |
 
 ---
 
-## Method 5: Multi-Model CQL (multiModelCQL/)
+## Method 5: CQL-MN — Multi-Network CQL (`methods/CQL-MN/`)
 
 ### RL Paradigm
-Conservative Q-Learning (CQL) with **three separate LSTM-DQN networks**, one per intervention point. Same CQL penalty as single-model, but each network is specialised to its own intervention and only ever sees transitions from that intervention. Structurally identical to LSTM-DQN (Method 1) plus a CQL conservative term in the per-step loss.
-
-### How Historical Data Is Used
-Sequential prefix transitions (same as Method 1). Filtered per intervention via `df[df['intervention']==int_idx]` inside each `make_loader()` call. Stored in `data/multi_cql_*_trans_{train|val}.pkl`.
-
-### State Representation
-Prefix-based sequential state — **identical for all three Q-networks**. Each Q_i is a separate `LSTM_DQN(n_activities, len(FEATURE_COLS)=6, n_act=N_ACTIONS[i], …)` instance trained only on intervention-i prefixes.
+CQL with **three separate LSTM-DQN networks**, one per intervention. Same CQL penalty as CQL-SN, but each network is specialised to its own intervention and only sees transitions from that intervention. Structurally identical to LSTM-DQN plus a per-step CQL term.
 
 ### Network Architecture
 ```
-Q1: LSTM_DQN(n_act=2, emb_dim=32, hidden=128, n_layers=2, dropout=0.2)
-Q2: LSTM_DQN(n_act=2, emb_dim=32, hidden=128, n_layers=2, dropout=0.2)
-Q3: LSTM_DQN(n_act=3, emb_dim=32, hidden=128, n_layers=2, dropout=0.2)
+Q₁: LSTM_DQN(n_act=2, emb_dim=32, hidden=128, n_layers=2, dropout=0.2)
+Q₂: LSTM_DQN(n_act=2, emb_dim=32, hidden=128, n_layers=2, dropout=0.2)
+Q₃: LSTM_DQN(n_act=3, emb_dim=32, hidden=128, n_layers=2, dropout=0.2)
 ```
-Three online networks + three target networks. All updated with soft Polyak updates (τ=0.005, after every step).
+Three online networks + three target networks, soft Polyak updates (τ=0.005).
 
-### CQL Loss (per network)
+### CQL Loss (per network, no masking needed)
 ```
 td_loss  = MSE(Q_i(s)[a_taken], target_i)
-cql_loss = (logsumexp(Q_i(s), dim=1) - Q_i(s)[a_taken]).mean()
-total    = td_loss + alpha * cql_loss            # alpha = 1.0
+cql_loss = (logsumexp(Q_i(s), dim=1) − Q_i(s)[a_taken]).mean()
+total    = td_loss + α · cql_loss          (α = 1.0)
 ```
-Gradient clipped to L2-norm 1.0; `weight_decay=1e-5`.
-
-### Reward Normalisation
-Per-network `r_mean, r_std` computed from terminal rewards in the training set; `norm(r) = (r - r_mean) / (r_std + 1e-8)`.
 
 ### Backward TD Routing
-- Q3 target: `norm(r)` (terminal only)
-- Q2 target: `term*norm(r) + (1-term)*gamma * max(Q3t(s'))`
-- Q1 target: routes by `next_intervention` to `max(Q2t(s'))` or `max(Q3t(s'))`; for unknown next intervention, takes the max over both.
+- Q₃ target: `norm(r)` (terminal only)
+- Q₂ target: `term·norm(r) + (1−term)·γ·max(Q₃t(s'))`
+- Q₁ target: routes by `next_intervention` to `max(Q₂t(s'))` or `max(Q₃t(s'))`
 
-### Training Procedure (defaults from `multiModelCQL/train.py`)
-```
-Optimizer:    Adam, lr=1e-3, weight_decay=1e-5
-Scheduler:    ReduceLROnPlateau(factor=0.5, patience=5)
-Batch size:   256
-Alpha (CQL):  1.0
-Gamma:        0.99
-Tau:          0.005
-Epochs:       50
-Patience:     10 (early stopping on validation TD-MSE per network)
-es_delta:     1e-4
-Grad clip:    norm 1.0
-Training order: Q3 → Q2 → Q1 (backward TD)
-```
+### Training Procedure
+Identical to CQL-SN: Adam lr=1e-3, batch=256, α=1.0, γ=0.99, τ=0.005, 50 epochs, patience=10, backward TD order Q₃→Q₂→Q₁.
 
-### Key Hyperparameters (defaults)
-| Parameter | Value |
-|-----------|-------|
-| emb_dim | 32 |
-| hidden | 128 |
-| n_layers | 2 |
-| dropout | 0.2 |
-| lr | 1e-3 |
-| batch_size | 256 |
-| alpha (CQL) | 1.0 |
-| gamma | 0.99 |
-| tau | 0.005 |
-| epochs | 50 |
-| patience | 10 |
+### Key Hyperparameters
+Same as CQL-SN.
 
 ---
 
-## Method 6: ProCause EconML S-learner (procause/econml_slearner/)
+## Method 6: LSTM-DQN-GBR (`methods/LSTM-DQN-GBR/`)
 
 ### RL Paradigm
-Hybrid method: **causal reward estimation (S-learner) + offline Q-learning (LSTM-DQN)**. Operates in three sequential phases. The S-learner estimates causal treatment effects to replace potentially confounded observed rewards; the downstream DQN then trains on these causally-corrected rewards using the same backward TD procedure as Method 1.
+Hybrid: **GBR S-learner (causal outcome model) + offline LSTM-DQN**. Three sequential phases. The S-learner estimates causal treatment effects to replace potentially confounded observed rewards; the downstream DQN trains on these causally-corrected rewards using backward TD (same as LSTM-DQN).
 
 ### Three-Phase Pipeline
 
-**Phase 1 — Train GBR S-learner (causal outcome model):**
-A GradientBoostingRegressor is trained per intervention as an S-learner: a single model `f(state, action) → outcome` fitted on all (flat 16-dim state, action, case_outcome) triplets. The case outcome is the final result of the entire case — not the intermediate step reward. Three separate GBR models, one per intervention.
+**Phase 1 — Train GBR S-learner per intervention:**
+`GradientBoostingRegressor` fitted as an S-learner: a single model `f([17-dim state | action]) → normalised outcome`, one per intervention. Fitted on all (flat state, action, case_outcome) triplets from the training set.
 
-**Phase 2 — Counterfactual-augmented causal rewards (shared protocol across Methods 6–9, since 2026-04-21):**
-For every terminal transition the S-learner provides a predicted outcome under each *valid* action at that intervention. The training/validation transition tables are augmented with one synthetic terminal row per (transition, candidate-action) pair, in which `action` is overwritten with the candidate and `reward` is the (denormalised) S-learner prediction for that counterfactual. The *factual* row is also rewritten using the model's prediction for the observed action (replacing the logged outcome). Non-terminal rows are not augmented; their reward stays at 0.
+**Phase 2 — Counterfactual augmentation:**
+For every terminal transition the S-learner provides predicted outcomes under each valid action. The transition table is augmented with one synthetic terminal row per (transition, candidate-action) pair, where `action` is the candidate and `reward` is the denormalised S-learner prediction. The factual row's reward is also rewritten using the model's prediction for the observed action. Non-terminal rows are not augmented.
 
-Effect on dataset size, per intervention:
+Effect on dataset size per intervention:
 ```
-new_size  ≈  #terminal × N_ACTIONS[int_idx]   +   #non-terminal
+new_size ≈ #terminal × N_ACTIONS[int_idx] + #non-terminal
 ```
-Source: `lstm_dqn_dragonnet/train.py` Phase 2 block (the original "factual replacement only" code path is preserved, commented out, for rollback). The same augmentation logic is applied in `procause/econml_slearner/train.py`, `procause/lstm_slearner/train.py`, and `lstm_dqn_tabpfn/train.py`.
 
 **Phase 3 — Train LSTM-DQN on causal rewards:**
-A standard LSTM-DQN (identical architecture and backward TD procedure to Method 1) is trained using the causal rewards from Phase 2 in place of raw observed rewards. The flat-state S-learner and the prefix-sequence DQN thus operate on different state representations within the same pipeline.
+Standard LSTM-DQN (identical architecture and backward TD to Method 1) trained on the Phase-2 augmented transition table.
 
-### State Representation
-- **S-learner (Phase 1 & 2)**: Flat 16-dim state vector — same `extract_state()` as K-means and CQL
-- **DQN (Phase 3)**: Prefix-based sequential state — same as LSTM-DQN (Method 1)
+### State Representations
+- **S-learner (Phase 1 & 2)**: Flat 17-dim state vector (`extract_state()`)
+- **DQN (Phase 3)**: Prefix-based sequential state (same as LSTM-DQN)
 
-### Model Architecture (Phase 1 — GBR S-learner)
+### Model Architecture — Phase 1 (GBR S-learner)
 ```
-Estimator: sklearn GradientBoostingRegressor
-n_estimators: 500
-max_depth: 5
-learning_rate: 0.05
-subsample: 0.8
-
-Input: [16-dim normalised state] + [1-dim action] = 17-dim
+sklearn GradientBoostingRegressor
+  n_estimators: 500
+  max_depth: 5
+  learning_rate: 0.05
+  subsample: 0.8
+Input: [17-dim StandardScaler-normalised state | 1-dim action] = 18-dim
 Output: scalar predicted outcome (normalised)
 ```
 
-### Model Architecture (Phase 3 — LSTM-DQN)
-Identical to Method 1 (LSTM-DQN): three Q-networks (Q1, Q2, Q3) with LSTM encoder (hidden=128, n_layers=2) + FC head, target networks with soft Polyak updates (τ=0.005).
+### Model Architecture — Phase 3 (LSTM-DQN)
+Identical to Method 1: Q₁, Q₂, Q₃ with LSTM encoder (hidden=128, n_layers=2) + FC head.
 
 ### Training Procedure
 ```
 Phase 1:
-  For each intervention i:
-    X = [[state | action] for each transition at intervention i]
-    y = [case_outcome (normalised) for each transition]
-    GBR_i.fit(X, y)
+  X = [[state | action]] per transition
+  y = normalised case_outcome
+  GBR_i.fit(X, y)  — one model per intervention
 
 Phase 2:
-  For each terminal transition at intervention i:
-    causal_reward = GBR_i.predict([state | action_taken])
-    replace observed reward with causal_reward
+  Augment terminal transitions with counterfactual rows (see above)
 
-Phase 3 (DQN — identical to Method 1):
+Phase 3 (DQN):
   Optimizer: Adam, dqn_lr=1e-3
   Batch size: 256
   Epochs: 50, patience: 10
-  Backward TD: Q3 → Q2 → Q1
+  Backward TD: Q₃ → Q₂ → Q₁
   Tau: 0.005, Gamma: 0.99
 ```
 
-### Key Hyperparameters (defaults)
+### Key Hyperparameters
 | Parameter | Value |
 |-----------|-------|
 | n_estimators | 500 |
@@ -546,42 +471,38 @@ Phase 3 (DQN — identical to Method 1):
 
 ---
 
-## Method 7: ProCause LSTM S-learner (procause/lstm_slearner/)
+## Method 7: LSTM-DQN-SLearner (`methods/LSTM-DQN-SLearner/`)
 
 ### RL Paradigm
-Hybrid method: **sequence-aware causal reward estimation (LSTM S-learner) + offline Q-learning (LSTM-DQN)**. Same three-phase pipeline as Method 6, but replaces the flat-state GBR S-learner with a sequence-aware LSTM S-learner that operates on the same variable-length event prefixes used by the downstream DQN. This makes the entire pipeline fully sequence-aware.
+Hybrid: **sequence-aware LSTM S-learner + offline LSTM-DQN**. Same three-phase pipeline as LSTM-DQN-GBR, but replaces the flat-state GBR with a prefix-aware LSTM S-learner. The entire pipeline is then fully sequence-aware.
 
 ### Three-Phase Pipeline
 
-**Phase 1 — Train LSTM S-learner (causal outcome model):**
-An LSTM_SLearner is trained per intervention: the model encodes the event prefix with an LSTM, embeds the action, and jointly predicts the scalar case outcome. Trained via MSE regression on (prefix, action, case_outcome) triplets with early stopping.
+**Phase 1 — Train LSTM S-learner per intervention:**
+`LSTM_SLearner` trained on (prefix, action, case_outcome) triplets via MSE regression with early stopping.
 
-**Phase 2 — Counterfactual-augmented causal rewards:**
-Same protocol as Method 6 Phase 2 (factual rewriting + one synthetic row per counterfactual action per terminal transition). Because the S-learner is sequence-aware, both the factual and counterfactual reward estimates condition on the full temporal process history rather than a flat state vector.
+**Phase 2 — Counterfactual augmentation:**
+Same protocol as Method 6 Phase 2. Because the S-learner is sequence-aware, both factual and counterfactual reward estimates condition on the full temporal process history.
 
 **Phase 3 — Train LSTM-DQN on causal rewards:**
-Identical to Method 6 Phase 3 and Method 1: standard LSTM-DQN with backward TD (Q3→Q2→Q1) trained on the causally-corrected rewards.
+Identical to Method 6 Phase 3.
 
-### State Representation
-Both the S-learner and the DQN use prefix-based sequential state — identical encoding (6 continuous features + activity embedding, padded to max_len=10). This distinguishes Method 7 from Method 6 where the S-learner uses a flat state.
-
-### Network Architecture (Phase 1 — LSTM_SLearner)
+### Network Architecture — Phase 1 (LSTM_SLearner)
 ```
 Activity embedding: nn.Embedding(n_activities, emb_dim=32)
 LSTM: input=(emb_dim+6)=38, hidden=128, n_layers=2, dropout=0.2
-  → final hidden state h_n[-1]: 128-dim (prefix encoding)
+  → prefix encoding h_n[-1]: 128-dim
 
 Action embedding: nn.Embedding(max_actions=3, action_emb_dim=16)
 
-Fusion: concat([prefix_encoding (128), action_embedding (16)]) → 144-dim
+Fusion: concat([prefix (128), action_emb (16)]) → 144-dim
 FC head: Linear(144 → 128) → ReLU → Dropout(0.2) → Linear(128 → 1)
 Output: scalar predicted outcome (normalised)
 ```
+Unlike LSTM_DQN which outputs Q-values for all actions, LSTM_SLearner takes a specific action and outputs a single scalar for that (prefix, action) pair.
 
-Unlike LSTM_DQN which outputs Q-values for all actions simultaneously, LSTM_SLearner takes a specific action as input and outputs a single scalar outcome prediction for that (prefix, action) pair.
-
-### Network Architecture (Phase 3 — LSTM-DQN)
-Identical to Method 1: three Q-networks (Q1, Q2, Q3), hidden=128, n_layers=2, target networks τ=0.005.
+### Network Architecture — Phase 3 (LSTM-DQN)
+Identical to Method 1.
 
 ### Training Procedure
 ```
@@ -590,22 +511,12 @@ Phase 1 (S-learner):
   Loss: MSE(predicted_outcome, normalised_case_outcome)
   Batch size: 256
   Epochs: 150, patience: 10
-  DataLoader: seeded for reproducibility
 
-Phase 2:
-  For each terminal transition at intervention i:
-    causal_reward = SLearner_i.predict(prefix, action_taken)
-    replace observed reward with causal_reward (de-normalised)
-
-Phase 3 (DQN — identical to Method 1):
-  Optimizer: Adam, dqn_lr=1e-3
-  Batch size: 256
-  Epochs: 50, patience: 10
-  Backward TD: Q3 → Q2 → Q1
-  Tau: 0.005, Gamma: 0.99
+Phase 3 (DQN):
+  Identical to Method 1 (lr=1e-3, batch=256, epochs=50, patience=10, τ=0.005, γ=0.99)
 ```
 
-### Key Hyperparameters (defaults)
+### Key Hyperparameters
 | Parameter | Value |
 |-----------|-------|
 | emb_dim | 32 |
@@ -621,71 +532,39 @@ Phase 3 (DQN — identical to Method 1):
 | dqn_patience | 10 |
 | tau | 0.005 |
 | gamma | 0.99 |
-| max_len | 10 |
 
 ---
 
-## Method 8: LSTM-DQN-TabPFN (lstm_dqn_tabpfn/)
+## Method 8: LSTM-DQN-TabPFN (`methods/LSTM-DQN-TabPFN/`)
 
 ### RL Paradigm
-Hybrid method: **TabPFN causal S-learner + offline Q-learning (LSTM-DQN)**. Same three-phase pipeline as ProCause EconML (Method 6), but replaces the GradientBoostingRegressor with a **TabPFN regressor** — a pretrained transformer that performs in-context learning over the training set at inference time, requiring no gradient-based training in Phase 1.
+Hybrid: **TabPFN S-learner + offline LSTM-DQN**. Same three-phase pipeline as LSTM-DQN-GBR, but replaces the GBR with a **TabPFN regressor** — a pretrained transformer that performs in-context learning, requiring no gradient-based training in Phase 1.
 
-### Three-Phase Pipeline
+### Phase 1 — TabPFN S-learner
+`TabPFNRegressor` fitted per intervention on (flat 17-dim state, action, case_outcome) triplets. `fit()` stores the data; `predict()` runs a transformer forward pass over it (in-context learning, no gradient descent). A `StandardScaler` is fitted on state features. If the training set exceeds `max_samples` (default 10000), a random subset is used.
 
-**Phase 1 — Train TabPFN S-learner:**
-A `TabPFNRegressor` is fitted per intervention on (flat state, action, case_outcome) triplets. TabPFN is a pretrained transformer model that uses the training set as context at prediction time (in-context learning); `fit()` stores the data and `predict()` runs a transformer forward pass over it. No gradient descent occurs. A `StandardScaler` is fitted on the state features for normalisation. Outcomes are normalised (mean/std) before fitting.
+### Phase 2 — Counterfactual augmentation
+Same protocol as Method 6 Phase 2. `predict_with_tabpfn` queries the model with concatenated `[state | action]` as a flat feature vector.
 
-**Phase 2 — Counterfactual-augmented causal rewards:**
-Same protocol as Method 6 Phase 2 — factual reward rewritten with `TabPFN_i.predict([state | a_obs])` (denormalised) and one synthetic row per remaining candidate action per terminal transition.
+### Phase 3 — Train LSTM-DQN on causal rewards
+Standard LSTM-DQN with backward TD, identical to Method 1.
 
-**Phase 3 — Train LSTM-DQN on causal rewards:**
-Standard LSTM-DQN with backward TD (Q3→Q2→Q1), identical to Method 1.
-
-### State Representation
-- **S-learner (Phase 1 & 2)**: Flat 16-dim state vector (same as K-means, CQL, ProCause EconML). Stored in the `state` column of the transition DataFrame during convert_data.
-- **DQN (Phase 3)**: Prefix-based sequential state — same LSTM encoding as Method 1.
-
-### Model Architecture (Phase 1 — TabPFN)
-```
-Estimator: TabPFNRegressor (pretrained transformer, in-context learning)
-  device: cuda if available, else cpu
-  random_state: seed + int_idx (for reproducibility)
-
-Input:  [16-dim StandardScaler-normalised state] + [1-dim action] = 17-dim
-Output: scalar predicted outcome (normalised), then denormalised for reward
-
-Subsampling: if training set > max_samples (default 10000), a random subset
-  is used for fitting (TabPFN has a practical limit on context size)
-```
-
-No explicit hyperparameters to tune for Phase 1 — TabPFN is pretrained and used as-is.
-
-### Model Architecture (Phase 3 — LSTM-DQN)
-Identical to Method 1: three Q-networks (Q1, Q2, Q3), hidden=128, n_layers=2, target networks τ=0.005.
+### State Representations
+- **S-learner**: Flat 17-dim state (`extract_state()`) + 1-dim action = 18-dim input to TabPFN
+- **DQN**: Prefix-based sequential state (same as LSTM-DQN)
 
 ### Training Procedure
 ```
-Phase 1 (TabPFN):
-  For each intervention i:
-    states = flat 16-dim state vectors (StandardScaler normalised)
-    X = [states | action_column]    # 17-dim
-    y = normalised case_outcome
-    TabPFN_i.fit(X, y)              # no gradient descent
+Phase 1:
+  X = [StandardScaler(state) | action]  (18-dim)
+  y = normalised case_outcome
+  TabPFN_i.fit(X, y)   — no gradient descent
 
-Phase 2:
-  For each terminal transition at intervention i:
-    causal_reward = TabPFN_i.predict([state | action]) * outcome_std + outcome_mean
-    replace observed reward with causal_reward
-
-Phase 3 (DQN — identical to Method 1):
-  Optimizer: Adam, dqn_lr=1e-3
-  Batch size: 256
-  Epochs: 50, patience: 10
-  Backward TD: Q3 → Q2 → Q1
-  Tau: 0.005, Gamma: 0.99
+Phase 3 (DQN):
+  Identical to Method 1 (lr=1e-3, batch=256, epochs=50, patience=10, τ=0.005, γ=0.99)
 ```
 
-### Key Hyperparameters (defaults)
+### Key Hyperparameters
 | Parameter | Value |
 |-----------|-------|
 | tabpfn_max_samples | 10000 |
@@ -705,82 +584,63 @@ Phase 3 (DQN — identical to Method 1):
 
 ---
 
-## Method 9: LSTM-DQN-DragonNet (lstm_dqn_dragonnet/)
+## Method 9: LSTM-DQN-DragonNet (`methods/LSTM-DQN-DragonNet/`)
 
 ### RL Paradigm
-Hybrid method: **LSTM-DragonNet causal outcome model + offline Q-learning (LSTM-DQN)**. Same three-phase pipeline as ProCause LSTM (Method 7), but replaces the plain LSTM S-learner with a **DragonNet** architecture that adds a propensity head and targeted regularisation loss (Shi et al., 2019). The targeted regularisation encourages outcome predictions to be locally invariant to propensity perturbations, improving causal reward quality under confounding.
+Hybrid: **LSTM-DragonNet causal outcome model + offline LSTM-DQN**. Same three-phase pipeline as LSTM-DQN-SLearner, but replaces the plain LSTM S-learner with a **DragonNet** architecture that adds a propensity head and targeted regularisation loss (Shi et al., 2019), improving causal reward quality under confounding.
 
-### Three-Phase Pipeline
+### Phase 1 — LSTM-DragonNet
+`LSTM_DragonNet` trained per intervention on (prefix, action, case_outcome) triplets. The model jointly optimises a factual outcome loss, a propensity loss (predicting which action was taken), and a targeted regularisation term.
 
-**Phase 1 — Train LSTM-DragonNet:**
-An `LSTM_DragonNet` is trained per intervention on (prefix, action, case_outcome) triplets. The model jointly optimises a factual outcome loss, a propensity loss (predicting which action was taken), and a targeted regularisation term. Only the outcome heads are used downstream.
+### Phase 2 — Counterfactual augmentation
+Same protocol as other causal hybrids. For each terminal transition, the factual reward is rewritten as `head_{a_obs}(Φ(prefix))` (denormalised) and one synthetic row is added per remaining candidate action with reward `head_a(Φ(prefix))`. The propensity head and `eps` parameter are not used at this stage.
 
-**Phase 2 — Counterfactual-augmented causal rewards:**
-Same protocol as Method 6 Phase 2. For each terminal transition, the factual reward is rewritten as `head_{a_obs}(Φ(prefix))` (denormalised) and one synthetic row is added per other candidate action `a` with reward `head_a(Φ(prefix))` (denormalised). The propensity head and `eps` parameter are not used at this stage.
+### Phase 3 — Train LSTM-DQN on causal rewards
+Standard LSTM-DQN with backward TD, identical to Method 1.
 
-**Phase 3 — Train LSTM-DQN on causal rewards:**
-Standard LSTM-DQN with backward TD (Q3→Q2→Q1), identical to Method 1.
-
-### State Representation
-Both the DragonNet and the DQN use prefix-based sequential state — identical LSTM encoding (emb_dim=32, hidden=128, n_layers=2). This is the same as ProCause LSTM (Method 7).
-
-### Network Architecture (Phase 1 — LSTM_DragonNet)
+### Network Architecture — Phase 1 (LSTM_DragonNet)
 ```
 Shared LSTM trunk Φ:
   Activity embedding: nn.Embedding(n_activities, emb_dim=32)
-  LSTM: input=(emb_dim+6)=38, hidden=128, n_layers=2, dropout=0.2
+  LSTM: input=38, hidden=128, n_layers=2, dropout=0.2
   Output: representation r = Φ(prefix), 128-dim
 
 Per-action outcome heads (one per action for this intervention):
   head_a: Linear(128→64) → ReLU → Dropout(0.2) → Linear(64→1)
-  Predicts scalar outcome if action a were taken.
-  Int. 0 & 1: 2 heads. Int. 2: 3 heads.
+  Int. 0 & 1: 2 heads; Int. 2: 3 heads.
 
 Propensity head:
   Linear(128→64) → ReLU → Dropout(0.2) → Linear(64→n_actions)
-  Outputs logits → softmax gives P(action | prefix)
+  Outputs logits for P(action | prefix)
 
 Targeted regularisation scalar:
-  self.eps: nn.Parameter (scalar, one per intervention model, learned)
+  self.eps: nn.Parameter (scalar, learned, one per intervention model)
 ```
 
 ### DragonNet Loss
 ```
-factual_loss    = MSE(head_a(r), observed_outcome_normalised)
-
+factual_loss    = MSE(head_a(r), normalised_outcome)
 propensity_loss = CrossEntropy(prop_logits, observed_action)
+targeted_loss   = MSE(outcome_pred + eps / max(p_obs, 1e-6), normalised_outcome)
+  where p_obs   = softmax(prop_logits)[observed_action]
 
-targeted_loss   = MSE(outcome_pred + eps * (1 / p_obs), observed_outcome_normalised)
-  where p_obs = softmax(prop_logits)[observed_action], clamped >= 1e-6
-
-total_loss = factual_loss + alpha_prop * propensity_loss + alpha_targeted * targeted_loss
+total = factual_loss + α_prop · propensity_loss + α_targeted · targeted_loss
 ```
 
 ### Training Procedure
 ```
 Phase 1 (DragonNet):
   Optimizer: Adam, lr=1e-3, weight_decay=1e-5
-  Loss: DragonNet loss (factual + propensity + targeted)
+  LR scheduler: ReduceLROnPlateau(factor=0.5, patience=5)
   Batch size: 256
   Epochs: 150, patience: 15
   Early stopping criterion: validation factual MSE only
-  LR scheduler: ReduceLROnPlateau, factor=0.5, patience=5
 
-Phase 2:
-  For each terminal transition at intervention i:
-    causal_reward = head_action(Φ(prefix)) * outcome_std + outcome_mean
-    replace observed reward with causal_reward
-    (propensity head and eps not used here)
-
-Phase 3 (DQN — identical to Method 1):
-  Optimizer: Adam, dqn_lr=1e-3
-  Batch size: 256
-  Epochs: 50, patience: 10
-  Backward TD: Q3 → Q2 → Q1
-  Tau: 0.005, Gamma: 0.99
+Phase 3 (DQN):
+  Identical to Method 1 (lr=1e-3, batch=256, epochs=50, patience=10, τ=0.005, γ=0.99)
 ```
 
-### Key Hyperparameters (defaults)
+### Key Hyperparameters
 | Parameter | Value |
 |-----------|-------|
 | emb_dim | 32 |
@@ -802,48 +662,45 @@ Phase 3 (DQN — identical to Method 1):
 ### Checkpoint Keys
 `dragonnet_1/2/3` (state dicts), `Q1`, `Q2`, `Q3`, `config`
 
-### Relationship to CFRNet
-DragonNet supersedes the earlier CFRNet implementation. CFRNet used MMD/IPM loss to balance representations across treatment groups, which hurt performance on confounded offline data by destroying confounder information in the shared encoder. DragonNet instead models confounding explicitly via the propensity head, leaving the representation free to retain all predictive signal.
-
 ---
 
-## Cross-Method Comparison Table
+## Cross-Method Comparison
 
-| Aspect | LSTM-DQN | RIMS | K-means | Single CQL | Multi CQL | ProCause EconML | ProCause LSTM | TabPFN | DragonNet |
-|--------|----------|------|---------|------------|-----------|-----------------|---------------|--------|-----------|
-| **RL type** | Offline DQN | Online DQN | Offline FQI | Offline CQL | Offline CQL | Causal + Offline DQN | Causal + Offline DQN | Causal + Offline DQN | Causal + Offline DQN |
-| **State (policy)** | Seq. prefix | Seq. prefix | Flat 17-dim | Seq. prefix | Seq. prefix | Seq. prefix | Seq. prefix | Seq. prefix | Seq. prefix |
-| **State (causal)** | — | — | — | — | — | Flat 17-dim | Seq. prefix | Flat 17-dim | Seq. prefix |
+| Aspect | LSTM-DQN | RIMS-DQN | K-Means-FQI | CQL-SN | CQL-MN | LSTM-DQN-GBR | LSTM-DQN-SLearner | LSTM-DQN-TabPFN | LSTM-DQN-DragonNet |
+|--------|----------|----------|-------------|--------|--------|--------------|-------------------|-----------------|-------------------|
+| **RL type** | Offline DQN | Online DQN | Offline FQI | Offline CQL | Offline CQL | Causal+Offline DQN | Causal+Offline DQN | Causal+Offline DQN | Causal+Offline DQN |
+| **State (policy)** | Sequential | Sequential | Flat 17-dim | Sequential | Sequential | Sequential | Sequential | Sequential | Sequential |
+| **State (causal model)** | — | — | — | — | — | Flat 17-dim | Sequential | Flat 17-dim | Sequential |
 | **Causal model** | — | — | — | — | — | GBR S-learner | LSTM S-learner | TabPFN S-learner | LSTM DragonNet |
-| **Network** | LSTM+FC | LSTM+FC | KMeans+table | LSTM-DQN (masked) | 3×LSTM-DQN | GBR+LSTM-DQN | LSTM+LSTM-DQN | TabPFN+LSTM-DQN | DragonNet+LSTM-DQN |
 | **Causal model trains?** | — | — | — | — | — | Yes (GBR) | Yes (LSTM) | No (pretrained) | Yes (LSTM) |
-| **Confounding mechanism** | None | None | None | None | None | S-learner | S-learner | S-learner | Propensity + targeted reg. |
-| **Backward TD** | Yes | Yes | Yes | Yes | Yes | Yes (DQN) | Yes (DQN) | Yes (DQN) | Yes (DQN) |
-| **Target network** | Yes τ=0.005 | Yes τ=0.005 | No | Yes τ=0.005 | Yes τ=0.005 | Yes τ=0.005 | Yes τ=0.005 | Yes τ=0.005 | Yes τ=0.005 |
+| **Confounding mechanism** | None | None | None | None | None | S-learner | S-learner | S-learner | Propensity + targeted |
 | **CQL penalty** | No | No | No | Yes α=1.0 | Yes α=1.0 | No | No | No | No |
-| **Reward signal** | Observed | Simulated | Observed | Observed | Observed | Causal reward | Causal reward | Causal reward | Causal reward |
-| **Loss fn** | MSE | MSE | Mean agg. | MSE+CQL | MSE+CQL | MSE | MSE | MSE | MSE+CE+targeted |
+| **Backward TD** | Yes | Yes | Yes | Yes | Yes | Yes (DQN) | Yes (DQN) | Yes (DQN) | Yes (DQN) |
+| **Target network τ** | 0.005 | 0.005 | No | 0.005 | 0.005 | 0.005 | 0.005 | 0.005 | 0.005 |
+| **Reward signal** | Observed | Simulated | Observed | Observed | Observed | Causal | Causal | Causal | Causal |
 | **Env interaction** | None | Simulator | None | None | None | None | None | None | None |
 
 ---
 
 ## Reproducibility: Seeding Strategy
 
-All methods implement a 3-layer seeding strategy:
+All methods implement a three-layer seeding strategy.
 
-**1. Global seed** (controls weight initialisation + all random ops):
+**1. Global seed** (controls weight initialisation and all random ops):
 ```python
 torch.manual_seed(seed)
 torch.cuda.manual_seed_all(seed)
 np.random.seed(seed)
 random.seed(seed)
 torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+torch.use_deterministic_algorithms(True, warn_only=True)
 ```
 
 **2. DataLoader seed** (controls shuffle order per epoch):
 ```python
 g = torch.Generator()
-g.manual_seed(seed)
+g.manual_seed(seed + int_idx)   # per-intervention offset avoids identical shuffle orders
 DataLoader(..., worker_init_fn=seed_worker, generator=g)
 
 def seed_worker(worker_id):
@@ -852,21 +709,30 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
 ```
 
-**3. sklearn seed** (for K-means and GBR):
+**3. sklearn seed** (for K-Means-FQI and LSTM-DQN-GBR):
 ```python
-KMeans(random_state=seed)
+KMeans(random_state=seed, n_init=10)
 GradientBoostingRegressor(random_state=seed)
 ```
 
-All 5 experimental seeds (defined in `shared/experiment_config.SEEDS = [42, 123, 456, 789, 1024]`, also re-listed in `run_seeds.py`) are applied identically across all methods, enabling paired statistical comparison.
+The 5 experimental seeds (`SEEDS = [42, 123, 456, 789, 1024]` in `methods/shared/experiment_config.py`) are applied identically across all methods.
+
+**Per-seed train/val split:** `split_train_val(df, val_ratio=0.2, seed=seed)` performs an 80/20 case-level split using the training seed. The split must be regenerated with the matching seed before training each model; using a fixed split across all seeds produces systematically incorrect early stopping and biased model selection. `run_intervention_combos.py` enforces this by calling `convert_data.py --seed {seed}` before each training run.
 
 ---
 
 ## Data Generation, Conversion and Loading Pipeline
 
-### 1. Raw event-log generation (`shared/generate_data.py`)
+### 1. Raw event-log generation (`methods/shared/generate_data.py`)
 
-The single shared entry point is `shared.generate_data.main()` (also exposed as `generate_data.py` at the project root). CLI arguments:
+Entry points:
+- `python generate_data.py` (root-level delegator)
+- `python methods/{Method}/generate_data.py` (per-method delegator)
+- `python methods/shared/generate_data.py` (called directly by `run_intervention_combos.py`)
+
+All three delegate to `shared.generate_data.main()`.
+
+CLI arguments:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -874,46 +740,46 @@ The single shared entry point is `shared.generate_data.main()` (also exposed as 
 | `--confounded` | off | Use confounded (bank+RCT) generation |
 | `--delta` | 0.95 | Bank-policy fraction in the mix (only with `--confounded`) |
 | `--seed` | 42 | Master RNG seed |
+| `--active` | all | Comma-separated active intervention indices (for subset data generation) |
 
-The script delegates to `shared.data_utils`:
+Key functions in `methods/shared/data_utils.py`:
 
-- **`get_simbank_params(n_cases, seed, rct)`** builds the SimBank `params` dict (the simulator config). Key fields:
+- **`get_simbank_params(n_cases, seed, rct)`** builds the SimBank `params` dict:
   - `simulation_start = datetime(2024, 3, 20, 8, 0)`
-  - `intervention_info`: defines the three interventions, their action spaces (`[2, 2, 3]`) and `RCT_timing = [1000, 1000, 1000]` (RCT randomisation budget per intervention).
-  - `policies_info`: bank-policy thresholds (`amount`, `est_quality`, `min_quality`, `max_noc`, `max_nor`, `min_amount_contact_cust`, etc.)
+  - `intervention_info`: three interventions, action spaces `[2, 2, 3]`, `RCT_timing = [1000, 1000, 1000]`
+  - `policies_info`: bank-policy thresholds
   - `log_cols`: `[case_nr, activity, timestamp, elapsed_time, cum_cost, est_quality, unc_quality, amount, interest_rate, discount_factor, outcome, quality, noc, nor, min_interest_rate]`
-- **`generate_rct_data(n_cases, seed)`**: instantiates `simulation.PresProcessGenerator(params, seed)` with `RCT=True`, calls `run_simulation_normal(n_cases)`, returns `(df, params)`.
+
+- **`generate_rct_data(n_cases, seed)`**: `RCT=True`, uniform random actions at all interventions.
 - **`generate_confounded_data(n_cases, seed, delta=0.95)`**:
-  1. Run a bank-policy simulation (`RCT=False`) with seed `seed` → `df_bank`.
-  2. Run an RCT simulation with seed `seed * 10` whose `simulation_start` equals the bank run's `simulation_end` (so timestamps don't overlap) → `df_rct`.
-  3. Mix via `confounding_level.set_delta(df_bank, df_rct, delta)`. With `delta=0.95`, ~95% of cases come from the bank policy and ~5% from the RCT, producing the confounded log used in confounded experiments.
-- **`save_pickle(obj, path)`** / **`load_pickle(path)`** are thin `pickle` wrappers used everywhere.
+  1. Bank-policy simulation (`RCT=False`, seed `seed`) → `df_bank`
+  2. RCT simulation (seed `seed*10`, `simulation_start = bank_run.simulation_end`) → `df_rct`
+  3. Mix via `confounding_level.set_delta(df_bank, df_rct, delta)` → ~95% bank, ~5% RCT
 
-Outputs (under `data/`):
-- `simbank_{RCT|CONF}_{n_cases}_raw.pkl` — the event-log DataFrame
-- `simbank_{RCT|CONF}_{n_cases}_params.pkl` — the SimBank `params` dict (also used at evaluation time to instantiate a fresh simulator)
+- **`generate_confounded_data_subset(n_cases, seed, active, delta=0.95)`** and **`generate_rct_data_subset(n_cases, seed, active)`**: variants where only interventions in `active` are randomised; inactive interventions follow bank policy. Used by `run_intervention_combos.py` for subset experiments.
 
-### 2. Method-specific transition extraction (`{method}/convert_data.py`)
+Outputs:
+- `data/simbank_{RCT|CONF}_{n_cases}_raw.pkl`
+- `data/simbank_{RCT|CONF}_{n_cases}_params.pkl`
 
-Each method reads the shared raw file and emits its own transition table. There are two shapes:
+### 2. Method-specific transition extraction (`methods/{Method}/convert_data.py`)
 
-**(a) Sequential prefix transitions** (LSTM, RIMS Q-network input, Single CQL, Multi CQL, ProCause LSTM, EconML, TabPFN, DragonNet):
-- For each case, walk events. When the activity matches an intervention activity:
-  - `prefix` = list of preceding event dicts (variable length)
-  - `action` = integer action; for intervention 2 derived via `get_ir_action(interest_rate)` (`0.07→0`, `0.08→1`, `0.09→2`)
-  - `reward` = `outcome` for terminal, `0.0` otherwise
-  - `next_prefix` = prefix at next intervention or `[]` if terminal
-  - `terminal`, `intervention ∈ {0,1,2}`, `next_intervention ∈ {1,2,-1}`
-- Branching paths handled: only-int0, int0→int1, int0→int2, int0→int1→int2.
-- Train/val split is by `case_nr` via `split_train_val(df, val_ratio=0.2, seed)` so that all transitions of a case live in the same split.
+**Sequential prefix transitions** (LSTM-DQN, RIMS-DQN Q-network input, CQL-SN, CQL-MN, LSTM-DQN-SLearner, LSTM-DQN-GBR, LSTM-DQN-TabPFN, LSTM-DQN-DragonNet):
+- Per case: walk events, identify intervention rows by activity name
+  - `prefix` = list of event dicts from case start up to (not including) the intervention
+  - `action` = integer; for intervention 2 derived via `get_ir_action(interest_rate)` (0.07→0, 0.08→1, 0.09→2)
+  - `reward` = `outcome` for terminal, `0.0` for non-terminal
+  - `next_prefix`, `terminal`, `intervention ∈ {0,1,2}`, `next_intervention ∈ {1,2,−1}`
+- Branching paths handled: only-int0, int0→int1, int0→int2, int0→int1→int2
+- Train/val split by `case_nr` via `split_train_val(df, val_ratio=0.2, seed)` with the training seed
 
-**(b) Flat-state transitions** (K-means; ProCause-EconML / TabPFN keep both shapes — flat for the S-learner, sequential for the DQN):
-- `state` = `extract_state(prev_event, activity_counts)`, a 17-dim vector built from `BASE_FEATURES` + `TRACKED_ACTIVITIES` counts up to the intervention point.
-- `next_state` is `extract_state` at the next intervention, or zeros for terminal.
+**Flat-state transitions** (K-Means-FQI; LSTM-DQN-GBR and LSTM-DQN-TabPFN additionally keep a flat `state` column for the S-learner):
+- `state = extract_state(prev_event, activity_counts)`, 17-dim vector
+- `next_state = extract_state(...)` at the next intervention, or zeros for terminal
 
-**(c) RIMS simulator artefacts** (`rims/convert_data.py`): trains the two LSTM simulator models (P_T, P_C), fits the empirical transition matrix, fits the acceptance logistic regression, collects initial prefixes. Bundle saved as `data/rims_{suffix}_{n}_simulator.pkl`.
+**RIMS simulator artefacts** (`methods/RIMS-DQN/convert_data.py`): trains P_T, P_C, empirical transition matrix, logistic acceptance model; saves as `data/rims_{suffix}_{n}_simulator.pkl`.
 
-Per-method output paths (suffix = `RCT` or `CONF`):
+Per-method output paths:
 ```
 data/lstm_{suffix}_{n}_trans_{train|val}.pkl                (prefix sequences)
 data/rims_{suffix}_{n}_simulator.pkl                        (P_T, P_C, transition matrix, acceptance model)
@@ -926,117 +792,170 @@ data/lstm_dqn_tabpfn_{suffix}_{n}_trans_{train|val}.pkl     (prefix + flat 17-di
 data/lstm_dqn_dragonnet_{suffix}_{n}_trans_{train|val}.pkl  (prefix sequences)
 ```
 
-`--steps {1,2,3}` truncates the transitions to the first `s` interventions and adds a `_steps{s}` suffix to the filenames.
+`--steps {1,2,3}` truncates transitions to the first `s` interventions and adds a `_steps{s}` suffix.
 
 ### 3. Vocabulary, normalisation and DataLoader construction
 
-- **`build_vocab_and_stats(df_train)`** in `shared/lstm_utils.py` walks all events in `prefix` + `next_prefix` and returns `(activity_to_idx, feat_means, feat_stds)`, mapping each activity string to a unique integer ≥ 1 (0 is reserved for padding) and computing per-feature mean/std for `FEATURE_COLS`.
-- **`encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len, n_activities)`** turns a list of prefixes into `(acts, feats, lens)` numpy arrays:
-  - `acts ∈ ℤ^{N×max_len}` (integer encoding) or one-hot `ℤ^{N×max_len×n_activities}` (onehot encoding)
-  - `feats ∈ ℝ^{N×max_len×6}`, normalised per feature
-  - `lens ∈ ℤ^{N}`, the true (unpadded) length, used by `pack_padded_sequence`
-- **`encode_prefix(prefix, cfg)`** is the single-prefix variant used at evaluation time; reads the same `feat_means/stds` and `activity_to_idx` from the saved checkpoint config so train- and eval-time encodings agree exactly.
-- DataLoaders are built with `worker_init_fn=seed_worker` and `generator=torch.Generator().manual_seed(seed)` so shuffle order is reproducible.
+- **`build_vocab_and_stats(df_train)`** in `methods/shared/lstm_utils.py`: walks all events in `prefix` + `next_prefix`, returns `(activity_to_idx, feat_means, feat_stds)`. Activity strings mapped to unique integers ≥ 1 (0 = padding). Sorted unique activities for run-to-run hash-order stability.
+- **`encode(prefixes, activity_to_idx, feat_means, feat_stds, max_len)`**: produces `(acts, feats, lens)` numpy arrays, normalising continuous features per `feat_means/feat_stds`.
+- **`encode_prefix(prefix, cfg)`**: single-prefix variant for evaluation; reads vocab and stats from the saved checkpoint `cfg` dict.
+- DataLoaders seeded with `torch.Generator().manual_seed(seed + int_idx)` for reproducible epoch shuffling.
 
 ### 4. Loading at training time
 
-Each `{method}/train.py` does:
+Each `methods/{Method}/train.py`:
 ```python
-df_train = load_pickle(f"data/{method}_{suffix}_{n}_trans_train{step_tag}.pkl")
-df_val   = load_pickle(f"data/{method}_{suffix}_{n}_trans_val{step_tag}.pkl")
-activity_to_idx, feat_means, feat_stds = build_vocab_and_stats(df_train)   # for LSTM-based methods
+df_train = load_pickle(f"data/{method}_{suffix}_{n}_trans_train.pkl")
+df_val   = load_pickle(f"data/{method}_{suffix}_{n}_trans_val.pkl")
+activity_to_idx, feat_means, feat_stds = build_vocab_and_stats(df_train)
 ```
-and packs everything used at inference (vocab, stats, max_len, network shape, `n_actions`) into a `cfg` dict that is saved alongside the model state dict in the `.pth` checkpoint.
+Config dict (vocab, stats, max_len, network shape, `n_actions`) saved alongside the model state dict in the `.pth` checkpoint.
 
 ---
 
 ## Evaluation: Technical Details
 
-### Shared evaluation harness (`shared/evaluation.py`)
+### Shared evaluation harness (`methods/shared/evaluation.py`)
 
-All methods evaluate via a single shared driver, `evaluate_policy(policy_fn, n_episodes, params, seed, ...)`:
-
+All methods evaluate via `evaluate_policy(policy_fn, n_episodes, params, seed, ...)`:
 ```python
 gen = simulation.PresProcessGenerator(params, seed=seed)
 for i in range(n_episodes):
-    if reset_fn: reset_fn()                              # e.g. clear running activity_counts
+    if reset_fn: reset_fn()
     prefix_list = gen.start_simulation_inference(seed_to_add=i)
     while gen.int_points_available:
-        prefix     = prefix_list[0][:-1]                 # all events up to (not incl.) intervention
+        prefix     = prefix_list[0][:-1]
         prev_event = prefix[-1]
         int_idx    = gen.current_int_index
-        action     = policy_fn(prev_event, int_idx[, prefix])   # use_prefix toggles arity
+        action     = policy_fn(prev_event, int_idx, prefix)   # use_prefix=True for LSTM-based
         prefix_list = gen.continue_simulation_inference(action)
     outcome = float(pd.DataFrame(gen.end_simulation_inference())["outcome"].iloc[-1])
 ```
 
-Key points:
-- A **fresh `PresProcessGenerator`** is built from the saved `params` dict so evaluation uses the exact simulator configuration as data generation.
-- `seed_to_add=i` perturbs the per-episode random stream, so episodes are independent but reproducible (paired across methods given the same `seed`).
-- Default evaluation: `n_episodes = 1000`, eval seed `seed=1042` (`--seed`), training seed re-loaded via `--train_seed` (default 42).
-- Action counts per intervention are tracked (`action_counts[int_idx][action] += 1`) and reported alongside the outcome.
+A fresh `PresProcessGenerator` is built from the saved `params` dict. `seed_to_add=i` gives paired, reproducible episodes across methods. Default: `n_episodes=1000`, eval seed `1042`.
 
-### Baselines (`shared/evaluation.bank_policy`, `random_policy`)
+### Baselines
 
-`bank_policy(prev_event, int_idx)` is a verbatim re-implementation of the bank's heuristic from SimBank's `extra_flow_conditions.py`:
-- **Int 0 (`choose_procedure`)**: `priority` if `amount > 50000` and `est_quality ≥ 5`, else `standard`.
-- **Int 1 (`time_contact_HQ`)**: `contact_headquarters` if `noc < 2`, `unc_quality == 0`, `amount > 10000`, `est_quality ≥ 2`, else `skip_contact`.
-- **Int 2 (`set_ir_3_levels`)**: `7%` if `amount > 60000`, `8%` if `amount > 30000`, else `9%`. Action indices align with `IR_LEVELS = [0.07, 0.08, 0.09]`.
+`bank_policy(prev_event, int_idx)` replicates the bank's heuristic from SimBank's `extra_flow_conditions.py`:
+- **Int 0**: `priority` if `amount > 50000` and `est_quality ≥ 5`, else `standard`
+- **Int 1**: `contact_HQ` if `noc < 2`, `unc_quality == 0`, `amount > 10000`, `est_quality ≥ 2`; else `skip`
+- **Int 2**: `7%` if `amount > 60000`; `8%` if `amount > 30000`; else `9%`
 
-`random_policy(prev_event, int_idx)` is `np.random.randint(0, [2, 2, 3][int_idx])`.
+`random_policy(prev_event, int_idx)` returns `np.random.randint(0, [2, 2, 3][int_idx])`.
 
 ### Method-specific policy wrappers
 
-Each `{method}/evaluate.py` defines a thin policy class implementing `__call__(prev_event, int_idx, prefix=None)` and an optional `reset()`:
+| Method | Policy class | Inputs to Q/table |
+|--------|-------------|-------------------|
+| LSTM-DQN | `LSTMPolicy` | `encode_prefix(prefix, cfg)` → `argmax Q_i[:N_ACTIONS[i]]` |
+| RIMS-DQN | `RIMSPolicy` | same as LSTM-DQN |
+| K-Means-FQI | `KMeansPolicy` | `extract_state(prev_event, counts)`; cluster via scaler+KMeans; `argmax Q_table[i][cluster]`; `reset()` clears activity counts |
+| CQL-SN | `SingleCQLPolicy` | `encode_prefix`; mask invalid slots; argmax over `N_ACTIONS[i]` |
+| CQL-MN | `MultiCQLPolicy` | `encode_prefix`; per-intervention Q-network |
+| All causal hybrids | `LSTMPolicy`-style | `encode_prefix`; only DQN heads queried at eval; causal model unused |
 
-| Method | Policy class | Inputs to Q | Notes |
-|--------|-------------|-------------|-------|
-| LSTM | `LSTMPolicy` | `encode_prefix(prefix, cfg)` → `(acts, feats, lens)` | `argmax(Q[int_idx][:N_ACTIONS[int_idx]])` |
-| RIMS | `RIMSPolicy` | same as LSTM | shares the LSTM-DQN inference path |
-| K-means | `KMeansPolicy` | `extract_state(prev_event, counts)`; cluster via fitted `scaler` + `KMeans` | `argmax(Q_table[int_idx][cluster])`; `reset()` clears `activity_counts` |
-| Single CQL | `SingleCQLPolicy` | `encode_prefix(prefix, cfg)` | masks invalid action slots; argmax over `N_ACTIONS[int_idx]` |
-| Multi CQL | `MultiCQLPolicy` | `encode_prefix(prefix, cfg)` | per-intervention Q-network |
-| ProCause / TabPFN / DragonNet | `LSTMPolicy`-style | `encode_prefix(prefix, cfg)` | only the DQN heads are queried at eval; the causal model is unused |
+Beyond the trained `--steps` boundary every policy falls back to `bank_policy`.
 
-Beyond the trained `--steps` boundary, every policy falls back to `bank_policy(prev_event, int_idx)` so partial-step models still produce well-defined action choices.
+### Result aggregation (`run_seeds.py`, `run_all_steps.py`, `retrain_all_3step.py`)
 
-### Result aggregation (`run_seeds.py`)
+`run_seeds.py` runs train + evaluate once per seed in `SEEDS = [42, 123, 456, 789, 1024]`, aggregates mean ± std across seeds. Available for: K-Means-FQI, LSTM-DQN, RIMS-DQN, CQL-SN, CQL-MN.
 
-`run_seeds.py` runs `train.py` and `evaluate.py` once per seed in `SEEDS = [42, 123, 456, 789, 1024]` and writes a JSON line per seed to a temporary `--results_file`, then aggregates mean ± std across seeds. CLI:
+`run_all_steps.py` orchestrates all 9 methods × steps {1,2,3} × conditions {RCT, CONF} × seeds and writes `results/all_results.json`.
+
+`retrain_all_3step.py` performs a clean retrain of all 9 methods × 5 seeds × {CONF, RCT} specifically for `--steps 3`, writing into `results/all_results.json`.
+
+Reported metric: mean per-case `outcome` (and std); also reported as `% gain over Bank Policy` = `(avg / bank_avg − 1) × 100`.
+
+---
+
+## Intervention Subset Experiment (`run_intervention_combos.py`)
+
+### Purpose
+Empirically tests whether joint optimisation over all intervention points outperforms training on subsets. LSTM-DQN is trained separately on each of the 7 non-empty subsets of {int0, int1, int2} and evaluated against the joint 3-step baseline.
+
+### Subsets
 ```
-python run_seeds.py --method {kmeans|lstm|rims|singleModelCQL|multiModelCQL} \
-                    --n_cases 10000 [--confounded] [--n_episodes 1000]
-                    [-- <extra_train_args>]
+{0}, {1}, {2}, {0,1}, {0,2}, {1,2}, {0,1,2}
 ```
-Causal hybrids (TabPFN, DragonNet, ProCause variants) are run from their per-method scripts under `scripts/` plus `run_seeds.py` patterns; the same paired-seed protocol applies.
+For each subset, inactive interventions are controlled by bank policy at both training and deployment time — ensuring the comparison is between purely subset-trained models, not partial deployment of a joint model.
 
-The reported metric in `print_results()` is mean per-case `outcome` (and its std); each non-Bank policy is also reported as `% gain over Bank` (`(avg/bank_avg − 1) × 100`).
+### Data Generation for Subsets
+Each subset uses its own training data in which only the active interventions are randomised:
+- `generate_confounded_data_subset(n_cases, seed, active)` / `generate_rct_data_subset(n_cases, seed, active)` in `methods/shared/data_utils.py`
+- `SimBank-main/SimBank/activity_execution.py` gates interest-rate randomisation on a per-name check: `if intervention_info["RCT"] and "set_ir_3_levels" in intervention_info["name"]` (line 204), consistent with how interventions 0 and 1 are gated via `policies_to_ignore`
+- Exception: the `{0,1,2}` subset reuses the standard CONF/RCT data (no separate generation needed)
 
-`print_action_dist()` prints the per-intervention action-mix percentages — these are the inputs to all action-distribution figures in `generate_performance_graphs.py` / `plot_results.py`.
+### Model Architecture
+`LSTM_DQN` per active intervention. Keys saved as `Q_int{i}` (not `Q1/Q2/Q3`) to avoid collision with `--steps` mode checkpoints. Model filename suffix: `_active{IDS}` (e.g., `_active02` for {0,2}).
+
+### Training (backward TD for active subset)
+```python
+# Models initialised in sorted(active) order for consistent RNG consumption
+models_init = {i: make_model(N_ACTIONS[i]) for i in active_sorted}
+
+# Train in reverse order
+for i in reversed(active_sorted):
+    if i == active_sorted[-1]:
+        target_fn = lambda b: norm(b['reward'])   # terminal reward only
+    else:
+        later_targets = {j: Q_target[j] for j in active_sorted if j > i}
+        target_fn = make_td_target(later_targets)  # TD routing by next_intervention
+    best = train_q(Q_i, Qt_i, optimizer, tr_loader, va_loader, target_fn, args)
+```
+
+`make_td_target` routes by `next_intervention` index: for each active downstream network, computes `γ · max Q_j(next_state)` and applies it to the matching transitions.
+
+### Seeding for Correctness
+`run_intervention_combos.py` calls `methods/LSTM-DQN/convert_data.py --seed {seed}` before each training run, regenerating the train/val split for that specific seed. This matches the behaviour of `retrain_all_3step.py`, which also regenerates per seed. All 5 seeds produce independent estimates; the `{0,1,2}` sanity check should agree with the 3-step joint baseline within stochastic noise.
+
+### Results Files
+- `results/lstm_joint_vs_subset.json` — CONF results
+- `results/lstm_joint_vs_subset_rct.json` — RCT results
+
+Format per entry:
+```json
+"lstm_CONF_Int012": {"mean": ..., "std": ..., "per_seed": {"42": ..., "123": ..., ...}}
+```
+The joint baseline is loaded from `results/all_results.json` (key `lstm_{suffix}_3`) and written as `lstm_{suffix}_joint` in the subset file.
 
 ---
 
 ## Data Pipeline Summary
 
 ```
-generate_data.py  (or shared/generate_data.py)
-  └─ generates: data/simbank_{RCT|CONF}_{n_cases}_raw.pkl
-                data/simbank_{RCT|CONF}_{n_cases}_params.pkl
+methods/shared/generate_data.py  (or root generate_data.py)
+  └─ data/simbank_{RCT|CONF}_{n_cases}_raw.pkl
+     data/simbank_{RCT|CONF}_{n_cases}_params.pkl
 
-{method}/convert_data.py   (reads shared raw file, writes method-specific transitions)
-  └─ lstm:         data/lstm_{suffix}_{n}_trans_{train|val}.pkl     (prefix sequences)
-  └─ rims:         data/rims_{suffix}_{n}_simulator.pkl             (P_T, P_C, transition matrix, acceptance model)
-  └─ kmeans:       data/kmeans_{suffix}_{n}_trans_{train|val}.pkl   (flat vectors)
-  └─ singleCQL:    data/single_cql_{suffix}_{n}_trans_{train|val}.pkl
-  └─ multiCQL:     data/multi_cql_{suffix}_{n}_trans_{train|val}.pkl
-  └─ econml:       data/procause_econml_{suffix}_{n}_trans_{train|val}.pkl
-  └─ lstm_sl:      data/procause_lstm_{suffix}_{n}_trans_{train|val}.pkl
-  └─ tabpfn:       data/lstm_dqn_tabpfn_{suffix}_{n}_trans_{train|val}.pkl  (prefix + flat state)
-  └─ dragonnet:    data/lstm_dqn_dragonnet_{suffix}_{n}_trans_{train|val}.pkl  (prefix sequences)
+methods/{Method}/convert_data.py   (reads shared raw, writes method-specific transitions)
+  └─ K-Means-FQI:         data/kmeans_{suffix}_{n}_trans_{train|val}.pkl
+     LSTM-DQN:             data/lstm_{suffix}_{n}_trans_{train|val}.pkl
+     RIMS-DQN:             data/rims_{suffix}_{n}_simulator.pkl
+     CQL-SN:               data/single_cql_{suffix}_{n}_trans_{train|val}.pkl
+     CQL-MN:               data/multi_cql_{suffix}_{n}_trans_{train|val}.pkl
+     LSTM-DQN-GBR:         data/procause_econml_{suffix}_{n}_trans_{train|val}.pkl
+     LSTM-DQN-SLearner:    data/procause_lstm_{suffix}_{n}_trans_{train|val}.pkl
+     LSTM-DQN-TabPFN:      data/lstm_dqn_tabpfn_{suffix}_{n}_trans_{train|val}.pkl
+     LSTM-DQN-DragonNet:   data/lstm_dqn_dragonnet_{suffix}_{n}_trans_{train|val}.pkl
 
-{method}/train.py  (reads converted data, writes model)
-  └─ models/{method}_{suffix}_{n}_s{seed}.pkl (or .pt)
+methods/{Method}/train.py
+  └─ models/{prefix}_{suffix}_{n}_s{seed}.{pkl|pth}
 
-{method}/evaluate.py  (loads model + params, runs SimBank episodes)
-  └─ results/{method}_{suffix}_{n}_seed{seed}_eval.pkl
+methods/{Method}/evaluate.py  (loads model + params, runs SimBank episodes, writes JSON)
+  └─ per-seed result → aggregated into results/all_results.json
+```
+
+Subset experiment (LSTM-DQN only):
+```
+methods/shared/generate_data.py --active {ids}
+  └─ data/simbank_{suffix}_{n}_active{ids}_raw.pkl   (omitted for {0,1,2} — reuses standard)
+
+methods/LSTM-DQN/convert_data.py --active {ids} --seed {seed}
+  └─ data/lstm_{suffix}_{n}_active{ids}_trans_{train|val}.pkl   (omitted for {0,1,2})
+
+methods/LSTM-DQN/train.py --active {ids} --seed {seed}
+  └─ models/lstm_{suffix}_{n}_s{seed}_active{ids}.pth
+
+methods/LSTM-DQN/evaluate.py --active {ids}
+  └─ results/lstm_joint_vs_subset[_rct].json
 ```

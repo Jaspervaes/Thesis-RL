@@ -201,7 +201,8 @@ class ActivityExecutioner():
             interest_rate = max(interest_rate, min_interest_rate)
             three_levels = [0.07, 0.08, 0.09]
             interest_rate = min(three_levels, key=lambda x:abs(x-interest_rate))
-            if intervention_info["RCT"]:
+            active_names = intervention_info.get("active_names", intervention_info["name"])
+            if intervention_info["RCT"] and "set_ir_3_levels" in active_names:
                 interest_rate = self.random_obj.choice(three_levels)
 
         return interest_rate, min_interest_rate, df

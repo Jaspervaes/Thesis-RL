@@ -26,62 +26,61 @@ ALL_STEPS   = [1, 2, 3]
 
 METHOD_SCRIPTS = {
     'kmeans': {
-        'generate': 'kmeans/generate_data.py',
-        'convert':  'kmeans/convert_data.py',
-        'train':    'kmeans/train.py',
-        'evaluate': 'kmeans/evaluate.py',
+        'generate': 'methods/K-Means-FQI/generate_data.py',
+        'convert':  'methods/K-Means-FQI/convert_data.py',
+        'train':    'methods/K-Means-FQI/train.py',
+        'evaluate': 'methods/K-Means-FQI/evaluate.py',
     },
     'lstm': {
-        'generate': 'lstm/generate_data.py',
-        'convert':  'lstm/convert_data.py',
-        'train':    'lstm/train.py',
-        'evaluate': 'lstm/evaluate.py',
+        'generate': 'methods/LSTM-DQN/generate_data.py',
+        'convert':  'methods/LSTM-DQN/convert_data.py',
+        'train':    'methods/LSTM-DQN/train.py',
+        'evaluate': 'methods/LSTM-DQN/evaluate.py',
     },
     'rims': {
-        'generate': 'rims/generate_data.py',
-        'convert':  'rims/convert_data.py',
-        'train':    'rims/train.py',
-        'evaluate': 'rims/evaluate.py',
+        'generate': 'methods/RIMS-DQN/generate_data.py',
+        'convert':  'methods/RIMS-DQN/convert_data.py',
+        'train':    'methods/RIMS-DQN/train.py',
+        'evaluate': 'methods/RIMS-DQN/evaluate.py',
     },
     'multiModelCQL': {
-        'generate': 'multiModelCQL/generate_data.py',
-        'convert':  'multiModelCQL/convert_data.py',
-        'train':    'multiModelCQL/train.py',
-        'evaluate': 'multiModelCQL/evaluate.py',
+        'generate': 'methods/CQL-MN/generate_data.py',
+        'convert':  'methods/CQL-MN/convert_data.py',
+        'train':    'methods/CQL-MN/train.py',
+        'evaluate': 'methods/CQL-MN/evaluate.py',
     },
     'singleModelCQL': {
-        'generate': 'singleModelCQL/generate_data.py',
-        'convert':  'singleModelCQL/convert_data.py',
-        'train':    'singleModelCQL/train.py',
-        'evaluate': 'singleModelCQL/evaluate.py',
+        'generate': 'methods/CQL-SN/generate_data.py',
+        'convert':  'methods/CQL-SN/convert_data.py',
+        'train':    'methods/CQL-SN/train.py',
+        'evaluate': 'methods/CQL-SN/evaluate.py',
     },
     'lstm_dqn_dragonnet': {
-        'generate': 'lstm_dqn_dragonnet/generate_data.py',
-        'convert':  'lstm_dqn_dragonnet/convert_data.py',
-        'train':    'lstm_dqn_dragonnet/train.py',
-        'evaluate': 'lstm_dqn_dragonnet/evaluate.py',
+        'generate': 'methods/LSTM-DQN-DragonNet/generate_data.py',
+        'convert':  'methods/LSTM-DQN-DragonNet/convert_data.py',
+        'train':    'methods/LSTM-DQN-DragonNet/train.py',
+        'evaluate': 'methods/LSTM-DQN-DragonNet/evaluate.py',
     },
     'lstm_dqn_tabpfn': {
-        'generate': 'lstm_dqn_tabpfn/generate_data.py',
-        'convert':  'lstm_dqn_tabpfn/convert_data.py',
-        'train':    'lstm_dqn_tabpfn/train.py',
-        'evaluate': 'lstm_dqn_tabpfn/evaluate.py',
+        'generate': 'methods/LSTM-DQN-TabPFN/generate_data.py',
+        'convert':  'methods/LSTM-DQN-TabPFN/convert_data.py',
+        'train':    'methods/LSTM-DQN-TabPFN/train.py',
+        'evaluate': 'methods/LSTM-DQN-TabPFN/evaluate.py',
     },
     'procause_econml': {
-        'generate': 'procause/econml_slearner/generate_data.py',
-        'convert':  'procause/econml_slearner/convert_data.py',
-        'train':    'procause/econml_slearner/train.py',
-        'evaluate': 'procause/econml_slearner/evaluate.py',
+        'generate': 'methods/LSTM-DQN-GBR/generate_data.py',
+        'convert':  'methods/LSTM-DQN-GBR/convert_data.py',
+        'train':    'methods/LSTM-DQN-GBR/train.py',
+        'evaluate': 'methods/LSTM-DQN-GBR/evaluate.py',
     },
     'procause_lstm': {
-        'generate': 'procause/lstm_slearner/generate_data.py',
-        'convert':  'procause/lstm_slearner/convert_data.py',
-        'train':    'procause/lstm_slearner/train.py',
-        'evaluate': 'procause/lstm_slearner/evaluate.py',
+        'generate': 'methods/LSTM-DQN-SLearner/generate_data.py',
+        'convert':  'methods/LSTM-DQN-SLearner/convert_data.py',
+        'train':    'methods/LSTM-DQN-SLearner/train.py',
+        'evaluate': 'methods/LSTM-DQN-SLearner/evaluate.py',
     },
 }
 
-# File prefix used in data/ and models/ directories
 FILE_PREFIX = {
     'kmeans':       'kmeans',
     'lstm':         'lstm',
@@ -261,7 +260,6 @@ def main():
                     method, suffix, steps, args.n_cases, args.n_episodes, extra, args.force
                 )
 
-                # Find the method label from results (e.g. 'KMeans RCT (1-step)')
                 example = next(iter(seed_results.values()))
                 method_label = [k for k in example if k not in ('Bank', 'Random')][0]
 

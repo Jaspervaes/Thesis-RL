@@ -1,1 +1,0 @@
-path = "C:\\Users\\jaspe\\OneDrive - KU Leuven\\Thesis\\SimBank-main\\SimBank-main"

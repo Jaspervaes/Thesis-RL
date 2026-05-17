@@ -1,0 +1,188 @@
+"""Convert raw SimBank data to LSTM offline RL transitions with prefix sequences."""
+import sys
+import os
+import argparse
+import numpy as np
+import pandas as pd
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+methods_dir = os.path.dirname(script_dir)
+project_root = os.path.dirname(methods_dir)
+sys.path.insert(0, project_root)
+sys.path.insert(0, methods_dir)
+os.chdir(project_root)
+
+from shared import load_pickle, save_pickle, split_train_val, get_ir_action, active_tag
+
+
+def extract_transitions(df, steps=3):
+    """
+    Extract transitions with prefix sequences for `steps` interventions.
+    Each row stores: (prefix, action, reward, next_prefix, terminal, intervention, next_intervention).
+    """
+    rows = []
+
+    for _, group in df.groupby('case_nr'):
+        group = group.sort_values('timestamp').reset_index(drop=True)
+        outcome = float(group['outcome'].iloc[-1])
+        events  = group.to_dict('records')
+
+        int0_rows = group[group['activity'].isin(['start_standard', 'start_priority'])]
+        if int0_rows.empty or int0_rows.index[0] == 0:
+            continue
+
+        i0 = int0_rows.index[0]
+        a0 = 1 if group.loc[i0, 'activity'] == 'start_priority' else 0
+        p0 = events[:i0]
+
+        if steps == 1:
+            rows.append({'prefix': p0, 'action': a0, 'reward': outcome,
+                         'next_prefix': [], 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+            continue
+
+        int1_rows = group[group['activity'].isin(['contact_headquarters', 'skip_contact']) & (group.index > i0)]
+        int2_rows = group[(group['activity'] == 'calculate_offer') & (group.index > i0)]
+        has1, has2 = not int1_rows.empty, not int2_rows.empty
+
+        if steps == 2:
+            if has1:
+                i1 = int1_rows.index[0]
+                a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
+                p1 = events[:i1]
+                rows += [
+                    {'prefix': p0, 'action': a0, 'reward': 0.0,    'next_prefix': p1, 'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                    {'prefix': p1, 'action': a1, 'reward': outcome, 'next_prefix': [], 'terminal': True,  'intervention': 1, 'next_intervention': -1},
+                ]
+            else:
+                # Priority path skips int1: outcome determined by bank at int2
+                rows.append({'prefix': p0, 'action': a0, 'reward': outcome,
+                             'next_prefix': [], 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+            continue
+
+        # steps == 3
+        if has1 and has2:
+            i1, i2 = int1_rows.index[0], int2_rows.index[0]
+            a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
+            a2 = get_ir_action(group.loc[i2].get('interest_rate', 0.08))
+            p1, p2 = events[:i1], events[:i2]
+            rows += [
+                {'prefix': p0, 'action': a0, 'reward': 0.0,    'next_prefix': p1, 'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                {'prefix': p1, 'action': a1, 'reward': 0.0,    'next_prefix': p2, 'terminal': False, 'intervention': 1, 'next_intervention': 2},
+                {'prefix': p2, 'action': a2, 'reward': outcome, 'next_prefix': [], 'terminal': True,  'intervention': 2, 'next_intervention': -1},
+            ]
+
+        elif not has1 and has2:
+            i2 = int2_rows.index[0]
+            a2 = get_ir_action(group.loc[i2].get('interest_rate', 0.08))
+            p2 = events[:i2]
+            rows += [
+                {'prefix': p0, 'action': a0, 'reward': 0.0,    'next_prefix': p2, 'terminal': False, 'intervention': 0, 'next_intervention': 2},
+                {'prefix': p2, 'action': a2, 'reward': outcome, 'next_prefix': [], 'terminal': True,  'intervention': 2, 'next_intervention': -1},
+            ]
+
+        elif has1:
+            i1 = int1_rows.index[0]
+            a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
+            p1 = events[:i1]
+            rows += [
+                {'prefix': p0, 'action': a0, 'reward': 0.0,    'next_prefix': p1, 'terminal': False, 'intervention': 0, 'next_intervention': 1},
+                {'prefix': p1, 'action': a1, 'reward': outcome, 'next_prefix': [], 'terminal': True,  'intervention': 1, 'next_intervention': -1},
+            ]
+
+        else:
+            rows.append({'prefix': p0, 'action': a0, 'reward': outcome,
+                         'next_prefix': [], 'terminal': True, 'intervention': 0, 'next_intervention': -1})
+
+    return rows
+
+
+def extract_transitions_subset(df, active):
+    """Extract transitions for a subset of active interventions with correct TD routing."""
+    active_set = set(active)
+    rows = []
+
+    for _, group in df.groupby('case_nr'):
+        group = group.sort_values('timestamp').reset_index(drop=True)
+        outcome = float(group['outcome'].iloc[-1])
+        events  = group.to_dict('records')
+
+        int0_rows = group[group['activity'].isin(['start_standard', 'start_priority'])]
+        if int0_rows.empty or int0_rows.index[0] == 0:
+            continue
+        i0 = int0_rows.index[0]
+        int1_rows = group[group['activity'].isin(['contact_headquarters', 'skip_contact']) & (group.index > i0)]
+        int2_rows = group[(group['activity'] == 'calculate_offer') & (group.index > i0)]
+        has1, has2 = not int1_rows.empty, not int2_rows.empty
+
+        seq = []
+        if 0 in active_set:
+            a0 = 1 if group.loc[i0, 'activity'] == 'start_priority' else 0
+            seq.append((0, a0, events[:i0]))
+        if 1 in active_set and has1:
+            i1 = int1_rows.index[0]
+            a1 = 0 if group.loc[i1, 'activity'] == 'contact_headquarters' else 1
+            seq.append((1, a1, events[:i1]))
+        if 2 in active_set and has2:
+            i2 = int2_rows.index[0]
+            a2 = get_ir_action(group.loc[i2].get('interest_rate', 0.08))
+            seq.append((2, a2, events[:i2]))
+
+        if not seq:
+            continue
+
+        for k, (int_idx, action, prefix) in enumerate(seq):
+            if k < len(seq) - 1:
+                nxt = seq[k + 1]
+                rows.append({'prefix': prefix, 'action': action, 'reward': 0.0,
+                             'next_prefix': nxt[2], 'terminal': False,
+                             'intervention': int_idx, 'next_intervention': nxt[0]})
+            else:
+                rows.append({'prefix': prefix, 'action': action, 'reward': outcome,
+                             'next_prefix': [], 'terminal': True,
+                             'intervention': int_idx, 'next_intervention': -1})
+    return rows
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--n_cases',    type=int, default=10000)
+    parser.add_argument('--confounded', action='store_true')
+    parser.add_argument('--seed',       type=int, default=42)
+    parser.add_argument('--steps',      type=int, default=3, choices=[1, 2, 3])
+    parser.add_argument('--active',     type=str, default=None,
+                        help='Comma-separated active intervention indices, e.g. "1,2"')
+    args = parser.parse_args()
+
+    if args.active is not None:
+        active = [int(x) for x in args.active.split(',')]
+        tag = active_tag(active)
+        suffix = "CONF" if args.confounded else "RCT"
+        base = f"data/lstm_{suffix}_{args.n_cases}{tag}"
+        df = load_pickle(f"data/simbank_{suffix}_{args.n_cases}{tag}_raw.pkl")
+        df_train, df_val = split_train_val(df, val_ratio=0.2, seed=args.seed)
+        train_rows = extract_transitions_subset(df_train, active)
+        val_rows   = extract_transitions_subset(df_val,   active)
+        save_pickle(pd.DataFrame(train_rows), f"{base}_trans_train.pkl")
+        save_pickle(pd.DataFrame(val_rows),   f"{base}_trans_val.pkl")
+        print(f"Train: {len(train_rows)}, Val: {len(val_rows)} transitions (active={active})")
+        print(f"[OK] Saved to {base}_trans_*.pkl")
+        return
+
+    suffix = "CONF" if args.confounded else "RCT"
+    base = f"data/lstm_{suffix}_{args.n_cases}"
+    step_tag = "" if args.steps == 3 else f"_steps{args.steps}"
+
+    df = load_pickle(f"data/simbank_{suffix}_{args.n_cases}_raw.pkl")
+    df_train, df_val = split_train_val(df, val_ratio=0.2, seed=args.seed)
+
+    train_rows = extract_transitions(df_train, args.steps)
+    val_rows   = extract_transitions(df_val,   args.steps)
+
+    save_pickle(pd.DataFrame(train_rows), f"{base}_trans_train{step_tag}.pkl")
+    save_pickle(pd.DataFrame(val_rows),   f"{base}_trans_val{step_tag}.pkl")
+    print(f"Train: {len(train_rows)}, Val: {len(val_rows)} transitions (steps={args.steps})")
+    print(f"[OK] Saved to {base}_trans_*{step_tag}.pkl")
+
+
+if __name__ == "__main__":
+    main()

@@ -13,11 +13,11 @@ sys.path.insert(0, script_dir)
 SEEDS = [42, 123, 456, 789, 1024]
 
 METHOD_SCRIPTS = {
-    'kmeans':         ('kmeans/train.py',        'kmeans/evaluate.py'),
-    'lstm':           ('lstm/train.py',           'lstm/evaluate.py'),
-    'rims':           ('rims/train.py',           'rims/evaluate.py'),
-    'singleModelCQL': ('singleModelCQL/train.py', 'singleModelCQL/evaluate.py'),
-    'multiModelCQL':  ('multiModelCQL/train.py',  'multiModelCQL/evaluate.py'),
+    'kmeans':         ('methods/K-Means-FQI/train.py',  'methods/K-Means-FQI/evaluate.py'),
+    'lstm':           ('methods/LSTM-DQN/train.py',      'methods/LSTM-DQN/evaluate.py'),
+    'rims':           ('methods/RIMS-DQN/train.py',      'methods/RIMS-DQN/evaluate.py'),
+    'singleModelCQL': ('methods/CQL-SN/train.py',        'methods/CQL-SN/evaluate.py'),
+    'multiModelCQL':  ('methods/CQL-MN/train.py',        'methods/CQL-MN/evaluate.py'),
 }
 
 
@@ -87,7 +87,6 @@ def main():
     gain = ((np.mean(method_avgs) / np.mean(bank_avgs)) - 1) * 100
     print(f"\n{args.method} {'beats' if gain > 0 else 'underperforms'} Bank by {gain:+.1f}% (averaged over {len(SEEDS)} seeds)")
 
-    # Per-seed breakdown
     print(f"\nPer-seed breakdown:")
     print(f"  {'Seed':<8} {'Bank':>10} {policy_key:>14}")
     for seed, r in zip(SEEDS, seed_results):

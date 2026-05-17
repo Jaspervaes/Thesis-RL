@@ -43,7 +43,7 @@ class ExtraFlowConditioner():
             policies["skip_contact"] = (prev_event["noc"] >= policies_info["max_noc"]) and (prev_event["activity"] == "validate_application")
         
         if intervention_info["RCT"] or ignore_intervention_policy:
-            policies_to_ignore = intervention_info["name"]
+            policies_to_ignore = intervention_info.get("active_names", intervention_info["name"])
         else:
             policies_to_ignore = []
 
