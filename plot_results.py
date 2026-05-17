@@ -490,8 +490,8 @@ def fig_normalized_gap(results, out_dir):
             error_kw={'lw': 1.5, 'capsize': 4, 'capthick': 1.5, 'ecolor': 'black'})
 
     ax.axvline(0, color='grey', lw=0.8, linestyle='--', alpha=0.6)
-    ax.set_xlabel('(RCT gain − CONF gain) / |RCT gain|  [%]')
-    ax.set_title('Normalized Confounding Gap by Method (3-step)', fontweight='bold')
+    ax.set_xlabel(r'$\Delta_{\mathrm{norm}}$')
+    ax.set_title('Normalised Confounding Gap by Method (3-step)', fontweight='bold')
     ax.grid(axis='x', alpha=0.3)
 
     plt.tight_layout()
